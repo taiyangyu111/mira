@@ -69,7 +69,7 @@ def saved_token(base):
     return keyring.get_password(KEYRING_SERVICE, base)
 
 
-def call(operation, arguments=None, *, token=None, base=None, upload_root=None):
+def call(operation, arguments=None, *, token=None, base=None, upload_root=None, request_timeout=90):
     method, path, _ = OPERATIONS[operation]
     arguments = dict(arguments or {})
     for key in ('project_id', 'asset_id', 'task_id', 'material_id'):
@@ -84,7 +84,7 @@ def call(operation, arguments=None, *, token=None, base=None, upload_root=None):
     if not token:
         raise ValueError('请先运行 auth-save，或通过 MIRA_TOKEN 提供访问令牌')
     headers = {'Authorization': 'Bearer ' + token}
-    with httpx.Client(base_url=base, headers=headers, trust_env=False, timeout=90) as client:
+    with httpx.Client(base_url=base, headers=headers, trust_env=False, timeout=request_timeout) as client:
         if operation == 'asset-upload':
             file = Path(arguments.pop('file')).expanduser()
             if upload_root:
@@ -139,11 +139,21 @@ def main():
         sys.stderr.reconfigure(encoding='utf-8')
     if __package__:
         from . import mira_cli_support as cli
+        from . import mira_cli_jobs as jobs
     else:
         import mira_cli_support as cli
+        import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.2.0')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.3.0')
     commands = parser.add_subparsers(dest='operation', required=True)
+
+    def job_options(command, resume=False):
+        command.add_argument('--run-file', type=Path, required=resume, help='任务记录 JSON；接续使用原文件，新任务不能覆盖已有记录')
+        command.add_argument('--timeout', type=float, default=600, help='最多轮询等待秒数，默认 600；0 表示只检查一次')
+        command.add_argument('--poll-interval', type=float, default=5, help='轮询间隔秒数，默认 5，范围 1–60')
+        if not resume:
+            command.add_argument('--project-id', help='回填目标画布 UUID，须同时指定 --node-id')
+            command.add_argument('--node-id', help='回填目标媒体节点 ID')
     for name, (_, _, description) in OPERATIONS.items():
         command = commands.add_parser(name, help=description, description=description,
                                       epilog=cli.command_help(name), formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -166,6 +176,17 @@ def main():
             command.add_argument('--kind', choices=['image', 'video', 'text', 'audio'], help='仅输出指定类型的公开模型目录')
         if name in GENERATION_OPERATIONS:
             command.add_argument('--confirm-spend', action='store_true', help='确认执行可能消耗积分的操作')
+        if name in jobs.MEDIA_OPERATIONS:
+            command.add_argument('--wait', action='store_true', help='等待图片/视频/音频结果；指定回填目标或记录文件也会启用等待')
+            job_options(command)
+    for name, description in [('task-wait', '等待已有媒体任务，可回填指定节点；不会提交生成'),
+                              ('task-resume', '读取任务记录，继续等待或只重试回填；不会提交生成')]:
+        command = commands.add_parser(name, help=description, description=description)
+        job_options(command, resume=name == 'task-resume')
+        if name == 'task-wait':
+            command.add_argument('--task-id', required=True, help='已有任务 UUID')
+        command.add_argument('--fields', help='筛选接续回执字段')
+        command.add_argument('--save-response', type=Path, help='另存完整接续回执，不覆盖已有文件')
     model_info = commands.add_parser('model-info', help='查询指定模型的公开配置与通用参数规则')
     model_info.add_argument('--model', required=True, help='模型 ID、上游 ID 或唯一展示名')
     model_info.add_argument('--kind', choices=['image', 'video', 'text', 'audio'])
@@ -174,7 +195,12 @@ def main():
     commands.add_parser('auth-save', help='在系统凭据库保存令牌')
     commands.add_parser('auth-clear', help='移除本机保存的令牌')
     options = parser.parse_args()
+    managed = options.operation in {'task-wait', 'task-resume'} or (options.operation in jobs.MEDIA_OPERATIONS and
+                any(getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id')))
+    workflow_exit = 0
     try:
+        if managed:
+            jobs.validate_options(options)
         if options.operation in {'auth-save', 'auth-clear'}:
             import keyring
             base = origin()
@@ -190,7 +216,7 @@ def main():
                     keyring.delete_password(KEYRING_SERVICE, base)
                 result = {'origin': base, 'cleared': True}
         else:
-            if options.operation != 'model-info':
+            if options.operation not in {'model-info', 'task-wait', 'task-resume'}:
                 if options.schema or options.example:
                     result = cli.contracts()[options.operation]['schema' if options.schema else 'example']
                     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -221,7 +247,18 @@ def main():
             stream = destination.open('x', encoding='utf-8') if destination else None
             response_received = False
             try:
-                result = call('model-list' if options.operation == 'model-info' else options.operation, arguments)
+                if managed:
+                    runner = jobs.Runner(call, origin())
+                    if options.operation == 'task-resume':
+                        result = runner.resume(options.run_file, timeout=options.timeout, poll_interval=options.poll_interval)
+                    else:
+                        result = runner.start(options.operation, arguments, path=options.run_file,
+                                              project_id=options.project_id, node_id=options.node_id,
+                                              task_id=getattr(options, 'task_id', None), timeout=options.timeout,
+                                              poll_interval=options.poll_interval)
+                    workflow_exit = result['exitCode']
+                else:
+                    result = call('model-list' if options.operation == 'model-info' else options.operation, arguments)
                 response_received = True
                 if stream:
                     json.dump(result, stream, ensure_ascii=False, indent=2)
@@ -237,7 +274,7 @@ def main():
                     stream.close()
                     if not response_received:
                         destination.unlink(missing_ok=True)
-            has_view = any(getattr(options, k, None) for k in ('summary', 'node_id', 'kind', 'fields')) or options.operation == 'model-info'
+            has_view = managed or any(getattr(options, k, None) for k in ('summary', 'node_id', 'kind', 'fields')) or options.operation == 'model-info'
             if destination and not has_view:
                 receipt = {'savedResponse': str(destination.resolve())}
                 if isinstance(result, dict):
@@ -253,6 +290,8 @@ def main():
     except (OSError, ValueError, KeyError, httpx.HTTPError) as exc:
         parser.exit(1, f'{exc}\n')
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if workflow_exit:
+        parser.exit(workflow_exit)
 
 
 if __name__ == '__main__':

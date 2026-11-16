@@ -1,6 +1,6 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.2.0**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.3.0**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
@@ -74,7 +74,7 @@ macOS / Linux 使用 `export MIRA_URL='https://your-mira-domain.example'` 设置
 | 资产 | `asset-search`、`asset-import`、`asset-upload` |
 | 模型与估价 | `model-list`、`model-info`、`generation-quote` |
 | 创作 | `text-generate`、`image-generate`、`video-generate`、`audio-generate` |
-| 任务 | `task-get`、`task-download` |
+| 任务 | `task-get`、`task-download`、`task-wait`、`task-resume` |
 | 素材 | `material-list`、`material-get`、`material-preparations`、`material-refresh-previews`、`material-authenticate`、`material-retry`、`material-reference` |
 
 `--help` 展示必填/可选字段及示例，`--schema` 查看完整嵌套参数，`--example` 输出示例 JSON。使用 `--validate-only` 可以先在本地检查参数，不联网、不提交生成。普通提交也会检查；实时模型能力和业务规则以服务端为准。
@@ -98,6 +98,17 @@ macOS / Linux 使用 `export MIRA_URL='https://your-mira-domain.example'` 设置
 `asset-upload` 的 `file` 参数为本地文件路径，仅支持不超过 80 MB 的图片、视频和音频。`task-download` 使用 `task_id` 和 `output` 参数下载已归档结果，不覆盖已有文件。
 
 此版本已移除前端隐藏功能对应的独立命令，包括多角度图片、视频剪辑、抽帧、抽音频、语音合成、语音识别、剧本生成和 3D 生成。服务端权限及批量编辑校验由所连接服务负责。
+
+## 等待生成并回填节点
+
+图片、视频、音频生成支持 `--wait`。指定目标画布和媒体节点后，CLI 会查询任务状态，成功后自动回填；超时或中断后使用任务记录继续，不会重新生成：
+
+```powershell
+.\.venv\Scripts\python.exe mira.py image-generate --file image.json --confirm-spend --wait --project-id "画布UUID" --node-id "节点ID" --run-file cat-run.json
+.\.venv\Scripts\python.exe mira.py task-resume --run-file cat-run.json
+```
+
+回填失败会单独返回 `attach_failed`，接续只查询原任务并重试回填。等待期间节点被修改时停止覆盖。终端关闭后不会在后台自动回填；需要重新运行接续命令。当前每个目标节点回填任务的主结果。详见 [等待与接续说明](CLI_GUIDE.md)。
 
 ## 下载校验
 

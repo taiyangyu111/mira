@@ -1,4 +1,4 @@
-# CLI 参数与精简输出（v0.2.0）
+# CLI 使用说明（v0.3.0）
 
 下列命令中的 `python` 指安装了 requirements.txt 的虚拟环境解释器。原有 `--json`、`--file`、`--confirm-spend` 保持使用；默认仍输出完整接口 JSON。
 
@@ -91,4 +91,69 @@ python mira.py canvas-get --file canvas.json --summary --save-response full-canv
 
 ## 更新
 
-更新时替换整个包并重新安装 requirements.txt；不要只复制 mira.py。CLI 现在还需要 mira_cli_support.py、mira_contracts.json 和 jsonschema 依赖。
+更新时替换整个包并重新安装 requirements.txt；不要只复制 mira.py。CLI 现在还需要 mira_cli_support.py、mira_cli_jobs.py、mira_contracts.json 和 jsonschema 依赖。
+
+## 自动等待与回填（v0.3.0）
+
+适用于 `image-generate`、`video-generate`、`audio-generate`。文本生成当前仍为同步调用，不使用这组任务等待选项。原有不带等待选项的提交方式保持原样。
+
+生成时等待，并把结果放回已经存在的媒体节点：
+
+```powershell
+python mira.py image-generate --file image.json --confirm-spend --wait --project-id "画布UUID" --node-id "图片节点ID" --timeout 600 --run-file cat-run.json
+```
+
+参数文件仍只放生成参数。`--project-id`、`--node-id` 是 CLI 选项，必须成对出现。CLI 会在提交前检查节点存在、节点类型与生成类型一致。请先通过 `generation-quote` 查看报价；等待功能不会替你确认消费。
+
+只等待结果，不回填：
+
+```powershell
+python mira.py video-generate --file video.json --confirm-spend --wait --timeout 600 --run-file video-run.json
+```
+
+指定回填目标或 `--run-file` 也会启用等待。默认每 5 秒查询一次，可用 `--poll-interval` 调整为 1–60 秒；默认等待预算为 600 秒，`--timeout 0` 只检查当前状态。预算针对提交后的轮询，提交和回填还有独立的网络请求时间，不是整个命令的总耗时上限。
+
+任务提交后会立即在 stderr 输出任务 ID 和记录路径；stdout 最终输出一份 JSON 回执。记录文件默认保存在当前目录 `.mira/runs/<随机ID>.json`，也可以显式指定 `--run-file`。记录包含站点、任务 ID、画布和节点 ID、回填操作 ID、结果地址及执行状态，不保存访问令牌和生成参数。不要把私人任务记录提交到公共仓库。
+
+超时、中断或回填失败后，使用原记录接续：
+
+```powershell
+python mira.py task-resume --run-file cat-run.json --timeout 600
+```
+
+`task-resume` **不会重新生成**：先查询原任务的服务端状态；已成功的任务只进行回填或确认已回填。即便进程在回填成功后丢失响应，也会识别节点上已有的相同结果。同一记录只能由一个 CLI 进程使用。
+
+已有任务但没有记录文件时：
+
+```powershell
+python mira.py task-wait --task-id "任务UUID" --timeout 600
+python mira.py task-wait --task-id "任务UUID" --project-id "画布UUID" --node-id "媒体节点ID" --timeout 0 --run-file attach-existing.json
+```
+
+上述命令不要求 `--confirm-spend`，因为不会提交生成；指定目标仍会编辑画布，需要对应的读写权限。
+
+### 状态与退出码
+
+| phase | 含义 | 退出码 |
+| --- | --- | --- |
+| `completed` | 已取得可公开的媒体结果，没有请求回填 | 0 |
+| `attached` | 已成功回填，或确认目标已有相同任务结果 | 0 |
+| `wait_timeout` / `interrupted` | 等待结束，服务端任务未取消；可继续接续 | 3 |
+| `generation_failed` | 生成失败或被取消，不尝试回填 | 4 |
+| `attach_failed` | 生成成功，但回填失败；接续只重试回填 | 4 |
+| `submission_unknown` | 提交响应丢失或没有任务 ID；不能判断是否已创建任务 | 4 |
+| `query_failed` / `preflight_failed` | 查询或提交前目标检查失败 | 4 |
+
+回执还包括独立的 `generation`、`attachment` 状态、`taskId`、`projectId`、`nodeId`、`runFile`、错误原因及接续命令参数。
+
+若提交网络超时且未收到任务 ID，CLI 不会自动重试提交。先在网站任务记录核对，找到任务 ID 后使用 `task-wait`，不要直接重新运行生成命令。已有记录文件不能用于再次提交生成。
+
+### 回填保护与限制
+
+- 只使用服务端公开的主结果地址；任务显示完成但没有公开地址时，继续等待或返回超时，不从内部元数据提取被隐藏的地址。
+- 当前回填一个主结果到一个节点。多图任务的其他结果仍在服务端任务记录中，可通过 `task-get` 查看，不会自动创建多个节点。
+- 回填前重新读取画布版本，仅更新目标节点的输出元数据，保留提示词等配置；服务端重新登记素材。版本冲突最多重读重试 3 次，同一回填始终沿用操作 ID。
+- 如果等待期间目标节点发生变化，停止回填；确认之后，可以用 `task-wait` 显式指定目标，重新挂接同一个已有任务。这不会重新生成。
+- 任务记录绑定原 `MIRA_URL`；接续时必须使用原站点和有权限的账号。
+- CLI 关闭后不会在后台自动回填；服务端生成可以继续，重新运行 `task-resume` 才会继续等待和回填。
+- `--save-response` 与等待模式组合时，保存的是最终流程回执，实时接续信息由 `--run-file` 保存。

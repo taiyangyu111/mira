@@ -1,6 +1,6 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.1.0**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.2.0**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
@@ -72,12 +72,24 @@ macOS / Linux 使用 `export MIRA_URL='https://your-mira-domain.example'` 设置
 | 账号 | `account`、`auth-save`、`auth-clear` |
 | 画布 | `canvas-list`、`canvas-get`、`canvas-create`、`canvas-apply` |
 | 资产 | `asset-search`、`asset-import`、`asset-upload` |
-| 模型与估价 | `model-list`、`generation-quote` |
+| 模型与估价 | `model-list`、`model-info`、`generation-quote` |
 | 创作 | `text-generate`、`image-generate`、`video-generate`、`audio-generate` |
 | 任务 | `task-get`、`task-download` |
 | 素材 | `material-list`、`material-get`、`material-preparations`、`material-refresh-previews`、`material-authenticate`、`material-retry`、`material-reference` |
 
-命令提供固定操作入口；具体业务参数和模型能力取决于所连接的 Mira 服务版本。`--help` 展示命令及通用参数，不包含完整业务参数结构。
+`--help` 展示必填/可选字段及示例，`--schema` 查看完整嵌套参数，`--example` 输出示例 JSON。使用 `--validate-only` 可以先在本地检查参数，不联网、不提交生成。普通提交也会检查；实时模型能力和业务规则以服务端为准。
+
+新增画布/任务摘要、单节点详情、模型类型筛选、字段筛选和完整响应保存。详细用法见 [CLI 参数与精简输出指南](CLI_GUIDE.md)。默认保持完整 JSON 输出。
+
+```powershell
+.\.venv\Scripts\python.exe mira.py image-generate --help
+.\.venv\Scripts\python.exe mira.py image-generate --file image.json --validate-only
+.\.venv\Scripts\python.exe mira.py model-list --kind image
+.\.venv\Scripts\python.exe mira.py canvas-get --file canvas-get.json --summary
+.\.venv\Scripts\python.exe mira.py canvas-get --file canvas-get.json --save-response full-canvas.json
+```
+
+`image.json` 的示例见指南。模型目录未提供的限制明确标记未知，不作推测。精简输出在 CLI 内完成，减少终端与 AI 上下文内容，不减少接口网络响应。
 
 编辑画布前先读取当前版本，`canvas-apply` 使用 `baseVersion` 和 `operationId`。同一操作重试沿用 `operationId`；发生版本冲突后重新读取画布。
 
@@ -102,6 +114,6 @@ macOS 可用 `shasum -a 256 mira-cli.zip`，Linux 可用 `sha256sum mira-cli.zip
 - 连接失败：检查 `MIRA_URL`、服务是否启动及本机网络。当前 CLI 不读取系统代理环境变量。
 - `401` / `403`：检查访问令牌、有效期及服务端权限。
 - 凭据库不可用：使用操作系统支持的凭据库，或通过当前进程的 `MIRA_TOKEN` 配置令牌。
-- 更新：下载最新压缩包，重新安装其中的依赖；保存在系统凭据库的令牌按站点地址复用。
+- 更新：下载最新压缩包，替换整个包并重新安装其中的依赖（v0.2.0 新增 jsonschema）；不要只替换 mira.py。保存在系统凭据库的令牌按站点地址复用。
 
 当前提供 Python 脚本包，尚无免安装的独立可执行文件。

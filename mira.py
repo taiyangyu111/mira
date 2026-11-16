@@ -133,15 +133,44 @@ def call(operation, arguments=None, *, token=None, base=None, upload_root=None):
 
 
 def main():
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8')
+    if __package__:
+        from . import mira_cli_support as cli
+    else:
+        import mira_cli_support as cli
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.2.0')
     commands = parser.add_subparsers(dest='operation', required=True)
     for name, (_, _, description) in OPERATIONS.items():
-        command = commands.add_parser(name, help=description)
+        command = commands.add_parser(name, help=description, description=description,
+                                      epilog=cli.command_help(name), formatter_class=argparse.RawDescriptionHelpFormatter)
         inputs = command.add_mutually_exclusive_group()
         inputs.add_argument('--json', help='操作参数 JSON 对象')
         inputs.add_argument('--file', type=Path, help='从 UTF-8 JSON 文件读取操作参数')
+        info = command.add_mutually_exclusive_group()
+        info.add_argument('--schema', action='store_true', help='输出完整参数 JSON Schema，不联网')
+        info.add_argument('--example', action='store_true', help='输出示例参数 JSON，不联网')
+        validation = command.add_mutually_exclusive_group()
+        validation.add_argument('--validate-only', action='store_true', help='仅本地检查参数，不联网、不提交')
+        validation.add_argument('--skip-validation', action='store_true', help='跳过本地规则以兼容更新的服务端；服务端仍会校验')
+        command.add_argument('--fields', help='仅输出指定字段，逗号分隔；支持 task.status 和数组下标')
+        command.add_argument('--save-response', type=Path, help='保存完整响应到 UTF-8 JSON 文件，不覆盖；默认终端只输出保存回执')
+        if name in {'canvas-get', 'task-get', 'model-list'}:
+            command.add_argument('--summary', action='store_true', help='输出精简摘要')
+        if name == 'canvas-get':
+            command.add_argument('--node-id', help='仅输出指定节点及与它相连的连接（在客户端筛选）')
+        if name == 'model-list':
+            command.add_argument('--kind', choices=['image', 'video', 'text', 'audio'], help='仅输出指定类型的公开模型目录')
         if name in GENERATION_OPERATIONS:
             command.add_argument('--confirm-spend', action='store_true', help='确认执行可能消耗积分的操作')
+    model_info = commands.add_parser('model-info', help='查询指定模型的公开配置与通用参数规则')
+    model_info.add_argument('--model', required=True, help='模型 ID、上游 ID 或唯一展示名')
+    model_info.add_argument('--kind', choices=['image', 'video', 'text', 'audio'])
+    model_info.add_argument('--fields', help='逗号分隔的输出字段路径')
+    model_info.add_argument('--save-response', type=Path, help='保存完整服务响应，不覆盖已有文件')
     commands.add_parser('auth-save', help='在系统凭据库保存令牌')
     commands.add_parser('auth-clear', help='移除本机保存的令牌')
     options = parser.parse_args()
@@ -161,16 +190,69 @@ def main():
                     keyring.delete_password(KEYRING_SERVICE, base)
                 result = {'origin': base, 'cleared': True}
         else:
-            if options.operation in GENERATION_OPERATIONS and not options.confirm_spend:
-                raise ValueError('此操作可能消耗积分，请先查看报价并传入 --confirm-spend')
-            raw = options.file.read_text(encoding='utf-8-sig') if options.file else options.json
-            arguments = json.loads(raw) if raw else {}
-            if not isinstance(arguments, dict):
-                raise ValueError('操作参数必须是 JSON 对象')
-            result = call(options.operation, arguments)
+            if options.operation != 'model-info':
+                if options.schema or options.example:
+                    result = cli.contracts()[options.operation]['schema' if options.schema else 'example']
+                    print(json.dumps(result, ensure_ascii=False, indent=2))
+                    return
+                raw = options.file.read_text(encoding='utf-8-sig') if options.file else options.json
+                arguments = json.loads(raw) if raw else {}
+                if not isinstance(arguments, dict):
+                    raise ValueError('操作参数必须是 JSON 对象')
+                if not options.skip_validation:
+                    report = cli.validate_arguments(options.operation, arguments)
+                    if options.validate_only:
+                        print(json.dumps(report, ensure_ascii=False, indent=2))
+                        if not report['valid']:
+                            parser.exit(2)
+                        return
+                    if not report['valid']:
+                        parser.exit(2, '参数检查失败，未提交请求：\n' + '\n'.join(f"  {e['field']}: {e['message']}" for e in report['errors']) + '\n')
+                    for warning in report['warnings']:
+                        print('提示：' + warning, file=sys.stderr)
+                if options.operation in GENERATION_OPERATIONS and not options.confirm_spend:
+                    raise ValueError('此操作可能消耗积分，请先查看报价并传入 --confirm-spend')
+            else:
+                arguments = {}
+            if options.fields and any(not part.strip() for part in options.fields.split(',')):
+                raise ValueError('--fields 不允许空字段名')
+            # Reserve output before sending a possibly billable request. Never overwrite.
+            destination = options.save_response.expanduser() if options.save_response else None
+            stream = destination.open('x', encoding='utf-8') if destination else None
+            response_received = False
+            try:
+                result = call('model-list' if options.operation == 'model-info' else options.operation, arguments)
+                response_received = True
+                if stream:
+                    json.dump(result, stream, ensure_ascii=False, indent=2)
+                    stream.write('\n')
+                    stream.flush()
+            except OSError as exc:
+                if response_received:
+                    print(json.dumps({'responseReceived': True, 'saveError': str(exc), 'response': result}, ensure_ascii=False, indent=2))
+                    parser.exit(1, '请求已返回，但保存文件失败；请先检查上述任务 ID，不要重复提交生成。\n')
+                raise
+            finally:
+                if stream:
+                    stream.close()
+                    if not response_received:
+                        destination.unlink(missing_ok=True)
+            has_view = any(getattr(options, k, None) for k in ('summary', 'node_id', 'kind', 'fields')) or options.operation == 'model-info'
+            if destination and not has_view:
+                receipt = {'savedResponse': str(destination.resolve())}
+                if isinstance(result, dict):
+                    if options.operation in GENERATION_OPERATIONS or options.operation == 'task-get':
+                        receipt.update({k: v for k, v in cli.task_view(result).items() if v is not None})
+                    elif result.get('id') is not None:
+                        receipt['id'] = result['id']
+                result = receipt
+            else:
+                result = cli.output_view(options.operation, result, summary=getattr(options, 'summary', False),
+                                         node_id=getattr(options, 'node_id', None), kind=getattr(options, 'kind', None),
+                                         model=getattr(options, 'model', None), fields=options.fields)
     except (OSError, ValueError, KeyError, httpx.HTTPError) as exc:
         parser.exit(1, f'{exc}\n')
-    print(json.dumps(result, ensure_ascii=True, indent=2))
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == '__main__':

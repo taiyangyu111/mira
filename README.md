@@ -1,6 +1,6 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.3.0**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.4.0**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
@@ -109,6 +109,10 @@ macOS / Linux 使用 `export MIRA_URL='https://your-mira-domain.example'` 设置
 ```
 
 回填失败会单独返回 `attach_failed`，接续只查询原任务并重试回填。等待期间节点被修改时停止覆盖。终端关闭后不会在后台自动回填；需要重新运行接续命令。当前每个目标节点回填任务的主结果。详见 [等待与接续说明](CLI_GUIDE.md)。
+
+## 画布同步显示
+
+v0.4.0 会把目标节点的排队、进度和失败原因同步到画布；配套新版网页可自动显示外部更新。网页正在输入、拖拽或保存时会延后同步。当前已在本机前端验收；远端站点需要单独部署配套前端，CLI 包不包含网页资源。详见 [画布同步显示说明](CLI_GUIDE.md)。
 
 ## 下载校验
 

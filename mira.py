@@ -1,4 +1,4 @@
-"""Mira CLI: fixed operation catalog and HTTP client."""
+"""Mira CLI fixed operation catalog and HTTP client."""
 from __future__ import annotations
 
 import argparse
@@ -144,7 +144,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.3.0')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.4.0')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):

@@ -149,7 +149,7 @@ def canvas_view(result, node_id=None, summary=False):
             raise ValueError('指定节点不存在：' + node_id)
         edges = [e for e in edges if str(e.get('sourceId', e.get('source'))) == node_id or str(e.get('targetId', e.get('target'))) == node_id]
     if summary:
-        nodes = [{'id': n.get('id'), 'name': n.get('title') or n.get('name') or n.get('label'), 'type': n.get('type'),
+        nodes = [{'id': n.get('id'), 'name': n.get('title') or n.get('name') or (n.get('metadata') or {}).get('title') or n.get('label'), 'type': n.get('type'),
                   'status': n.get('status') or (n.get('metadata') or {}).get('status')} for n in nodes]
         edges = [{'id': e.get('id'), 'sourceId': e.get('sourceId', e.get('source')), 'targetId': e.get('targetId', e.get('target'))} for e in edges]
     view.update(nodes=nodes, connections=edges, nodeCount=len(nodes), connectionCount=len(edges))

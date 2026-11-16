@@ -100,8 +100,13 @@ def normalized(value):
     return value
 
 
-def fingerprint(node):
-    return hashlib.sha256(json.dumps(normalized(node), sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
+def fingerprint(node, ignore_runtime=False):
+    value = normalized(node)
+    if ignore_runtime and isinstance(value.get('metadata'), dict):
+        for key in ('taskId', 'status', 'taskStatus', 'progress', 'errorMessage', 'imageGenerationStage',
+                    'canvasPreparation', 'canUseForGeneration', 'updatedAt'):
+            value['metadata'].pop(key, None)
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
 def target_node(canvas, node_id, kind=None):
@@ -139,7 +144,7 @@ class Runner:
         return self.call(operation, arguments, base=self.base, request_timeout=timeout)
 
     def report(self, state, path):
-        keys = ('phase', 'generation', 'attachment', 'taskId', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'error', 'operationId')
+        keys = ('phase', 'generation', 'attachment', 'taskId', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'error', 'operationId', 'statusSyncError')
         result = {k: state.get(k) for k in keys}
         result.update(runFile=str(path), origin=self.base, resume=['task-resume', '--run-file', str(path)])
         result['exitCode'] = 0 if state['phase'] in {'completed', 'attached'} else (3 if state['phase'] in {'wait_timeout', 'interrupted'} else 4)
@@ -183,7 +188,9 @@ class Runner:
                     canvas = self.request('canvas-get', {'project_id': project_id})
                     node, _ = target_node(canvas, node_id, state['kind'])
                     state['kind'] = node['type']
-                    state['targetFingerprint'] = fingerprint(node)
+                    state['fingerprintVersion'] = 2
+                    state['originalTaskId'] = (node.get('metadata') or {}).get('taskId')
+                    state['targetFingerprint'] = fingerprint(node, ignore_runtime=True)
                     self.persist(state, path)
                 if task_id:
                     return self.wait(state, path, timeout, poll_interval)
@@ -247,6 +254,7 @@ class Runner:
             status = state['taskStatus']
             if status in FAILED:
                 state.update(generation='failed', attachment='not_attempted' if state.get('projectId') else 'not_requested')
+                self.sync_status(state, path)
                 return self.finish(state, path, 'generation_failed', state.get('taskError') or status)
             if status in SUCCEEDED:
                 state['generation'] = 'succeeded'
@@ -259,12 +267,65 @@ class Runner:
                 state.update(generation='pending', phase='waiting')
             else:
                 return self.finish(state, path, 'query_failed', '未知任务状态：' + status)
+            self.sync_status(state, path)
             self.persist(state, path)
             remaining = deadline-self.clock()
             if remaining <= 0:
                 return self.finish(state, path, 'wait_timeout', '等待时间已到；任务未取消。成功但无公开结果地址时也不会回填。')
             self.sleep(min(poll_interval, remaining))
             response = None
+
+    def check_target(self, state, node):
+        modern = state.get('fingerprintVersion') == 2
+        if modern and (node.get('metadata') or {}).get('taskId') not in {state.get('taskId'), state.get('originalTaskId')}:
+            raise ValueError('目标节点已关联其他任务，已停止同步，避免覆盖新的生成。')
+        if fingerprint(node, ignore_runtime=modern) != state.get('targetFingerprint'):
+            raise ValueError('等待期间目标节点已修改，已停止回填。确认目标后可用 task-wait 显式指定节点重新挂接已有任务。')
+        if not modern:
+            state.update(fingerprintVersion=2, originalTaskId=(node.get('metadata') or {}).get('taskId'),
+                         targetFingerprint=fingerprint(node, ignore_runtime=True))
+
+    def sync_status(self, state, path):
+        if not state.get('projectId') or not state.get('taskId'):
+            return
+        failed = state.get('taskStatus') in FAILED
+        queued = state.get('taskStatus') in {'pending', 'queued', 'submitted', 'accepted', ''}
+        raw_progress = state.get('progress')
+        progress = max(0, min(99, int(raw_progress))) if isinstance(raw_progress, (int, float)) and math.isfinite(raw_progress) else 0
+        changes = {'taskId': state['taskId'], 'status': 'failed' if failed else 'running',
+                   'taskStatus': state.get('taskStatus') if failed else ('pending' if queued else 'processing'),
+                   'progress': progress, 'errorMessage': (state.get('taskError') or state.get('taskStatus')) if failed else '',
+                   'imageGenerationStage': ('生成失败' if failed else '排队中' if queued else
+                                            '等待公开结果' if state.get('generation') == 'succeeded' else '生成中')}
+        if changes == state.get('lastPublishedStatus'):
+            return
+        for attempt in range(3):
+            try:
+                canvas = self.request('canvas-get', {'project_id': state['projectId']})
+                node, version = target_node(canvas, state['nodeId'], state['kind'])
+                metadata = dict(node.get('metadata') or {})
+                if metadata.get('taskId') == state['taskId'] and metadata.get('status') == 'succeeded':
+                    return  # Browser reconciliation may already have published this result.
+                self.check_target(state, node)
+                if metadata.get('taskId') == state['taskId'] and not failed:
+                    changes['progress'] = max(changes['progress'], min(99, int(metadata.get('progress') or 0)))
+                digest = hashlib.sha256((str(state['operationId']) + json.dumps(changes, sort_keys=True)).encode()).hexdigest()[:48]
+                if any(metadata.get(k) != v for k, v in changes.items()):
+                    metadata.update(changes)
+                    self.request('canvas-apply', {'project_id': state['projectId'], 'baseVersion': version,
+                        'operationId': 'cli-progress-' + digest, 'actions': [{'type': 'update_node', 'payload': {
+                            'nodeId': state['nodeId'], 'changes': {'metadata': metadata}}}]})
+                state.update(lastPublishedStatus=changes, statusSyncError=None)
+                self.persist(state, path)
+                return
+            except ERRORS as exc:
+                if 'Mira HTTP 409 ' in str(exc) and attempt < 2:
+                    continue
+                if state.get('statusSyncError') != str(exc):
+                    self.announce('节点状态同步暂未成功；任务查询仍会继续：' + str(exc))
+                state['statusSyncError'] = str(exc)
+                self.persist(state, path)
+                return
 
     def attach(self, state, path):
         state['attachment'] = 'pending'
@@ -283,10 +344,9 @@ class Runner:
                 metadata = dict(node.get('metadata') or {})
                 if (metadata.get('taskId') == state['taskId'] and normalized(metadata.get('resultUrl')) == normalized(state['resultUrl'])
                         and normalized(metadata.get('src')) == normalized(state['resultUrl'])):
-                    state['attachment'] = 'succeeded'
+                    state.update(attachment='succeeded', statusSyncError=None)
                     return self.finish(state, path, 'attached')
-                if fingerprint(node) != state.get('targetFingerprint'):
-                    raise ValueError('等待期间目标节点已修改，已停止回填。确认目标后可用 task-wait 显式指定节点重新挂接已有任务。')
+                self.check_target(state, node)
                 # These identify the old output, not input references. The server
                 # registers and checks the new media; never copy old approval flags.
                 for key in ('materialId', 'fileKey', 'storageKey', 'assetId', 'assetUri', 'assetStatus',
@@ -294,7 +354,8 @@ class Runner:
                             'fileName', 'mimeType', 'format'):
                     metadata.pop(key, None)
                 metadata.update(taskId=state['taskId'], resultUrl=state['resultUrl'], src=state['resultUrl'],
-                                resultUrls=[state['resultUrl']], activeResultIndex=0, status='succeeded', taskStatus='completed', progress=100, errorMessage='')
+                                resultUrls=[state['resultUrl']], activeResultIndex=0, status='succeeded', taskStatus='completed', progress=100,
+                                errorMessage='', imageGenerationStage='已完成')
                 if state.get('thumbnailUrl'):
                     metadata['thumbnailUrl'] = state['thumbnailUrl']
                 else:
@@ -303,7 +364,7 @@ class Runner:
                 self.request('canvas-apply', {'project_id': state['projectId'], 'baseVersion': version,
                     'operationId': state['operationId'], 'actions': [{'type': 'update_node', 'payload': {
                         'nodeId': state['nodeId'], 'changes': {'metadata': metadata}}}]})
-                state['attachment'] = 'succeeded'
+                state.update(attachment='succeeded', statusSyncError=None)
                 return self.finish(state, path, 'attached')
             except ERRORS as exc:
                 if 'Mira HTTP 409 ' in str(exc) and attempt < 2:

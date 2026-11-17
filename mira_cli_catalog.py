@@ -23,7 +23,7 @@ NODES = {
     'inputs':['手写 content','生成时提供 messages；模型或参考资料需显式传入'],
     'outputs':['metadata.content 文本；不是媒体文件'],
     'commands':['canvas-get','canvas-apply','text-generate'],
-    'parameterMapping':{'metadata.title':'节点名称','metadata.content':'展示文字；不会自动变成 messages','metadata.textManualEntry':'手写文本设为 true','metadata.textModel':'需要生成时显式映射到 model，先查模型目录'},
+    'parameterMapping':{'metadata.title':'节点名称','metadata.content':'展示文字；不会自动变成 messages','metadata.textManualEntry':'手写文本设为 true','显式选择的文本模型 ID':'先查 model-list，将选定 ID 作为 model；不要假定节点保存了模型字段'},
     'execution':{'directCommand':'text-generate','automaticAttachment':False,'steps':['手写文字直接 canvas-apply','AI 写作：准备 messages，先验证及报价，再 text-generate','读取实际响应中的文字，合并当前 metadata 后更新 content；没有文本 --wait 自动回填']},
     'limits':['不要为了记录分镜调用付费写作；创建 text 节点即可'],
  },

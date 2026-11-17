@@ -159,7 +159,8 @@ def create(layout_file, out, base, call, image_model=None, video_model=None, ima
                         'aspectRatio': m.get('videoAspectRatio', '16:9'), 'fps': numeric_setting(m.get('videoFps', 24)),
                         'generateAudio': m.get('videoGenAudio', m.get('generateAudio', False)),
                         'autoDuration': False, 'outputFormat': 'mp4'}
-            shot[kind] = {'nodeId': node['id'], 'arguments': args, 'targetFingerprint': jobs.fingerprint(node, ignore_runtime=True),
+            shot[kind] = {'nodeId': node['id'], 'arguments': args, 'fingerprintVersion': 3,
+                          'targetFingerprint': jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=True),
                           'initialState': availability(node), 'existingTaskId': m.get('taskId')}
         result['shots'].append(shot)
     # Creation never changes a canvas or submits a task.
@@ -235,7 +236,7 @@ def analyze(path, plan, call):
                         row['errors'].append('已有任务需要处理，请接续或核对，不会重新生成')
                     continue
                 node = node_from(canvas, step['nodeId'], kind)
-                if availability(node) != 'new' or jobs.fingerprint(node, ignore_runtime=True) != step['targetFingerprint']:
+                if availability(node) != 'new' or jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=step.get('fingerprintVersion') == 3) != step['targetFingerprint']:
                     raise ValueError('目标节点已变化，请重新创建执行计划，已有任务不会重生成')
                 args = resolve(shot, kind, canvas, preview=True)
                 row['requestDigest'] = digest(args)
@@ -372,7 +373,7 @@ def run(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False
                 raise ValueError('该镜头已有任务记录，停止新提交，请接续原任务')
             canvas = call('canvas-get', {'project_id': plan['projectId']})
             node = node_from(canvas, shot[kind]['nodeId'], kind)
-            if availability(node) != 'new' or jobs.fingerprint(node, ignore_runtime=True) != shot[kind]['targetFingerprint']:
+            if availability(node) != 'new' or jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=shot[kind].get('fingerprintVersion') == 3) != shot[kind]['targetFingerprint']:
                 raise ValueError('目标节点已变化，停止剩余提交')
             arguments = resolve(shot, kind, canvas)
             if digest(arguments) != row['requestDigest']:
@@ -388,7 +389,7 @@ def run(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False
                 response = call(operation, args, **kwargs)
                 if operation == 'canvas-get' and not paid[0]:
                     target = node_from(response, shot[kind]['nodeId'], kind)
-                    if jobs.fingerprint(target, ignore_runtime=True) != shot[kind]['targetFingerprint']:
+                    if jobs.fingerprint(target, ignore_runtime=True, normalize_numbers=shot[kind].get('fingerprintVersion') == 3) != shot[kind]['targetFingerprint']:
                         raise ValueError('提交前目标节点发生变化，未生成')
                     if digest(resolve(shot, kind, response)) != row['requestDigest']:
                         raise ValueError('提交前首帧发生变化，未生成')

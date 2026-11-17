@@ -100,8 +100,20 @@ def normalized(value):
     return value
 
 
-def fingerprint(node, ignore_runtime=False):
+def canonical_numbers(value):
+    if isinstance(value, dict):
+        return {k: canonical_numbers(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [canonical_numbers(v) for v in value]
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return int(value)
+    return value
+
+
+def fingerprint(node, ignore_runtime=False, normalize_numbers=False):
     value = normalized(node)
+    if normalize_numbers:
+        value = canonical_numbers(value)
     if ignore_runtime and isinstance(value.get('metadata'), dict):
         for key in ('taskId', 'status', 'taskStatus', 'progress', 'errorMessage', 'imageGenerationStage',
                     'canvasPreparation', 'canUseForGeneration', 'updatedAt'):
@@ -188,9 +200,9 @@ class Runner:
                     canvas = self.request('canvas-get', {'project_id': project_id})
                     node, _ = target_node(canvas, node_id, state['kind'])
                     state['kind'] = node['type']
-                    state['fingerprintVersion'] = 2
+                    state['fingerprintVersion'] = 3
                     state['originalTaskId'] = (node.get('metadata') or {}).get('taskId')
-                    state['targetFingerprint'] = fingerprint(node, ignore_runtime=True)
+                    state['targetFingerprint'] = fingerprint(node, ignore_runtime=True, normalize_numbers=True)
                     self.persist(state, path)
                 if task_id:
                     return self.wait(state, path, timeout, poll_interval)
@@ -276,14 +288,14 @@ class Runner:
             response = None
 
     def check_target(self, state, node):
-        modern = state.get('fingerprintVersion') == 2
+        modern = state.get('fingerprintVersion') in (2, 3)
         if modern and (node.get('metadata') or {}).get('taskId') not in {state.get('taskId'), state.get('originalTaskId')}:
             raise ValueError('目标节点已关联其他任务，已停止同步，避免覆盖新的生成。')
-        if fingerprint(node, ignore_runtime=modern) != state.get('targetFingerprint'):
+        if fingerprint(node, ignore_runtime=modern, normalize_numbers=state.get('fingerprintVersion') == 3) != state.get('targetFingerprint'):
             raise ValueError('等待期间目标节点已修改，已停止回填。确认目标后可用 task-wait 显式指定节点重新挂接已有任务。')
-        if not modern:
-            state.update(fingerprintVersion=2, originalTaskId=(node.get('metadata') or {}).get('taskId'),
-                         targetFingerprint=fingerprint(node, ignore_runtime=True))
+        if state.get('fingerprintVersion') != 3:
+            state.update(fingerprintVersion=3, originalTaskId=(node.get('metadata') or {}).get('taskId'),
+                         targetFingerprint=fingerprint(node, ignore_runtime=True, normalize_numbers=True))
 
     def sync_status(self, state, path):
         if not state.get('projectId') or not state.get('taskId'):

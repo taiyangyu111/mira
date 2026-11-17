@@ -1,6 +1,21 @@
-# CLI 使用说明（v0.8.0）
+# CLI 使用说明（v0.9.0）
 
 下列命令中的 `python` 指安装了 requirements.txt 的虚拟环境解释器。原有 `--json`、`--file`、`--confirm-spend` 保持使用；默认仍输出完整接口 JSON。
+
+## 浏览器登录
+
+```powershell
+python mira.py login
+# 只需要查询时，可主动限制为只读
+python mira.py login --scope read
+python mira.py account
+```
+
+`login` 自动打开当前 `MIRA_URL` 的 Mira 授权页。未登录先完成网页登录，核对终端授权码后点击「确认授权」。CLI 自动把有效期 7 天的令牌保存到系统凭据库，不需要复制粘贴；网页和终端都不显示访问令牌。默认一次申请 `generate` 完整创作权限，包含读取、编辑、上传和生成，无需逐项重新登录；可用 `--scope read` 或 `--scope edit` 主动限制权限。授权本身不扣费，生成仍需要 `--confirm-spend`。
+
+可选参数：`--no-browser` 仅显示链接；`--timeout 120` 设置等待秒数（1–300，默认 300）；`--label "我的电脑"` 设置插件页的客户端名称。链接 5 分钟有效，只能领取一次。取消、过期或校验失败不会主动删除原有本机凭据。
+
+`auth-save` 保留手动输入令牌；旧服务端不支持浏览器登录时可继续使用。`auth-clear` 只清除本机凭据，撤销远程访问请到 Mira 插件页。若环境中设置了 `MIRA_TOKEN`，它仍优先于系统凭据库。远程 `MIRA_URL` 必须使用 HTTPS，本机可使用 `http://127.0.0.1:8091`。
 
 ## 从分镜到批量执行
 

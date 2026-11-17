@@ -1,4 +1,4 @@
-"""Mira CLI operation catalog and HTTP client."""
+"""Mira CLI and MCP share this fixed operation catalog and HTTP client."""
 from __future__ import annotations
 
 import argparse
@@ -82,7 +82,7 @@ def call(operation, arguments=None, *, token=None, base=None, upload_root=None, 
     base = origin(base)
     token = token or saved_token(base)
     if not token:
-        raise ValueError('请先运行 auth-save，或通过 MIRA_TOKEN 提供访问令牌')
+        raise ValueError('请先运行 login 在浏览器授权；也可用 auth-save 或 MIRA_TOKEN 提供令牌')
     headers = {'Authorization': 'Bearer ' + token}
     with httpx.Client(base_url=base, headers=headers, trust_env=False, timeout=request_timeout) as client:
         if operation == 'asset-upload':
@@ -144,7 +144,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.8.0')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.9.0')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -287,6 +287,12 @@ def main():
         custom.add_argument('--fields', help='逗号分隔的输出字段')
         custom.add_argument('--save-response', type=Path, help='保存完整报告，不覆盖')
     commands.add_parser('auth-save', help='在系统凭据库保存令牌')
+    login_command = commands.add_parser('login', help='打开浏览器登录并将凭据保存到系统凭据库')
+    login_command.add_argument('--scope', choices=['read', 'edit', 'generate'], default='generate',
+                               help='默认 generate：读取、编辑、上传和生成；可选 read 或 edit 限制权限')
+    login_command.add_argument('--label', default='Mira CLI', help='插件页显示的客户端名称')
+    login_command.add_argument('--no-browser', action='store_true', help='只显示授权链接，不自动打开浏览器')
+    login_command.add_argument('--timeout', type=float, default=300, help='等待授权的秒数，最多 300 秒')
     commands.add_parser('auth-clear', help='移除本机保存的令牌')
     options = parser.parse_args()
     managed = options.operation in {'task-wait', 'task-resume'} or (options.operation in jobs.MEDIA_OPERATIONS and
@@ -387,7 +393,14 @@ def main():
             return
         if managed:
             jobs.validate_options(options)
-        if options.operation in {'auth-save', 'auth-clear'}:
+        if options.operation == 'login':
+            if __package__:
+                from . import mira_cli_auth
+            else:
+                import mira_cli_auth
+            result = mira_cli_auth.login(origin(), KEYRING_SERVICE, scope=options.scope, label=options.label,
+                                         no_browser=options.no_browser, timeout=options.timeout)
+        elif options.operation in {'auth-save', 'auth-clear'}:
             import keyring
             base = origin()
             if options.operation == 'auth-save':

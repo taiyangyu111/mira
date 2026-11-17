@@ -1,10 +1,16 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.8.0**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.9.0**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
-此下载包仅包含 CLI，不包含 MCP 服务端。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务和访问令牌。
+此下载包仅包含 CLI。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务。浏览器登录后自动保存凭据，无需手动复制令牌。
+
+## 浏览器一次授权
+
+安装后运行 `mira.py login`，会打开当前 Mira 站点的授权页。未登录时直接展开登录框；登录后核对授权码，确认一次即可获得读取、编辑、上传和生成权限。凭据保存到系统凭据库，不出现在浏览器地址或终端输出中。授权有效期 7 天，可在 Mira 的 CLI 页面撤销。授权本身不扣费，实际生成仍需费用确认。
+
+可选 `--scope read` / `--scope edit` 限制权限；`--no-browser` 只打印授权链接；`--timeout` 设置 1–300 秒等待时间。服务端需要配套支持浏览器授权接口，旧服务端仍可用 `auth-save`。同时修复浏览器将坐标 `670.0` 保存为 `670` 时导致任务回填、执行计划误判节点已修改的问题。
 
 ## 分镜驱动的批量执行计划
 
@@ -54,16 +60,16 @@ python3 -m venv .venv
 
 ## 连接 Mira
 
-先在 Mira 网站的 `/plugins` 页面获取访问令牌。设置你实际使用的 Mira 站点地址；以下域名只是占位示例：
+设置你实际使用的 Mira 站点地址，再发起浏览器登录。以下域名只是占位示例：
 
 ```powershell
 $env:MIRA_URL = 'https://your-mira-domain.example'
-.\.venv\Scripts\python.exe mira.py auth-save
+.\.venv\Scripts\python.exe mira.py login
 .\.venv\Scripts\python.exe mira.py account
 .\.venv\Scripts\python.exe mira.py canvas-list
 ```
 
-`auth-save` 会隐藏输入，并在校验成功后将令牌保存到系统凭据库。远程地址必须使用 HTTPS，且不包含路径或查询参数。未设置 `MIRA_URL` 时连接本机 `http://127.0.0.1:8091`。
+`login` 默认一次申请完整创作权限，浏览器确认后自动保存到系统凭据库。`auth-save` 保留手动输入方式，用于旧服务端或其他备用场景。远程地址必须使用 HTTPS，且不包含路径或查询参数。未设置 `MIRA_URL` 时连接本机 `http://127.0.0.1:8091`。
 
 macOS / Linux 使用 `export MIRA_URL='https://your-mira-domain.example'` 设置地址。无系统凭据库的环境可通过当前进程环境变量 `MIRA_TOKEN` 提供令牌；该变量优先于保存的令牌。不要将令牌写入代码或提交到仓库。
 

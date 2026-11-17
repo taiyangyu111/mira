@@ -1,10 +1,20 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.5.2**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.6.0**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
 此下载包仅包含 CLI，不包含 MCP 服务端。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务和访问令牌。
+
+## 批量分镜布局
+
+新增 `storyboard-plan` 和 `storyboard-apply`，输入镜头列表即可预览并创建节点、连线和排版。支持说明→图片→视频、图片→视频、说明→图片，最多10镜。不会提交生成，重复应用同一计划不重复创建，版本冲突不覆盖现有画布。详见 [分镜布局指南](STORYBOARD_GUIDE.md)。
+
+```powershell
+python mira.py storyboard-plan --example
+python mira.py storyboard-plan --project-id <画布UUID> --file shots.json --out plan.json
+python mira.py storyboard-apply --file plan.json
+```
 
 ## 安装
 
@@ -134,7 +144,7 @@ macOS 可用 `shasum -a 256 mira-cli.zip`，Linux 可用 `sha256sum mira-cli.zip
 当前提供 Python 脚本包，尚无免安装的独立可执行文件。
 
 
-## AI 节点目录与流程（v0.5.2）
+## AI 节点目录与流程（v0.6.0）
 
 先用 `node-list`、`workflow-list` 选择节点与流程，再用 `node-info --node video` 或 `workflow-info --workflow nature-video` 按需查询。目录仅覆盖前端可见基础节点；支持字段筛选、创建节点示例与保存结果，不联网、不要求令牌、不提交生成。详见 [节点与流程指南](NODE_GUIDE.md)。
 

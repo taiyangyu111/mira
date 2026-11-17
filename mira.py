@@ -1,4 +1,4 @@
-"""Mira CLI fixed operation catalog and HTTP client."""
+"""Mira CLI operation catalog and HTTP client."""
 from __future__ import annotations
 
 import argparse
@@ -144,7 +144,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.5.2')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.6.0')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -207,6 +207,21 @@ def main():
             command.add_argument('--workflow', required=True, help='workflow-list 中的流程 ID')
         command.add_argument('--fields', help='只输出指定字段，逗号分隔')
         command.add_argument('--save-response', type=Path, help='保存查询结果，不覆盖已有文件')
+    storyboard = commands.add_parser('storyboard-plan', help='预览分镜节点布局并保存计划，只读画布、不生成',
+                                    description='最多 10 个镜头。默认说明→图片→视频；自动放在现有节点下方。用 --example/--schema 离线查询输入。')
+    inputs = storyboard.add_mutually_exclusive_group()
+    inputs.add_argument('--file', type=Path, help='UTF-8 分镜 JSON 文件')
+    inputs.add_argument('--json', help='分镜 JSON 对象')
+    info = storyboard.add_mutually_exclusive_group()
+    info.add_argument('--example', action='store_true', help='离线输出完整输入示例')
+    info.add_argument('--schema', action='store_true', help='离线输出输入规则')
+    info.add_argument('--validate-only', action='store_true', help='仅检查分镜输入，不联网')
+    storyboard.add_argument('--project-id', help='已有画布 UUID')
+    storyboard.add_argument('--out', type=Path, help='保存可审阅、可重复应用的计划，不覆盖已有文件')
+    storyboard.add_argument('--x', type=float, help='可选起点，必须与 --y 同时设置；检查现有节点重叠')
+    storyboard.add_argument('--y', type=float, help='可选起点；默认放到已有内容下方')
+    storyboard_apply = commands.add_parser('storyboard-apply', help='应用保存的布局计划，只新增节点和连线，不生成')
+    storyboard_apply.add_argument('--file', type=Path, required=True, help='storyboard-plan 保存的计划；重试沿用原文件')
     commands.add_parser('auth-save', help='在系统凭据库保存令牌')
     commands.add_parser('auth-clear', help='移除本机保存的令牌')
     options = parser.parse_args()
@@ -214,6 +229,16 @@ def main():
                 any(getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id')))
     workflow_exit = 0
     try:
+        if options.operation in {'storyboard-plan', 'storyboard-apply'}:
+            if __package__:
+                from . import mira_cli_storyboard as storyboard_cli
+            else:
+                import mira_cli_storyboard as storyboard_cli
+            result = storyboard_cli.run(options, call, origin)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if result.get('valid') is False:
+                parser.exit(2)
+            return
         if options.operation in catalog_commands:
             if __package__:
                 from . import mira_cli_catalog as catalog

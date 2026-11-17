@@ -64,7 +64,7 @@ WORKFLOWS = {
     'label':'约一分钟自然风景视频','purpose':'从分镜、构图到镜头和配乐成片',
     'nodes':['text','image','video','audio'],
     'steps':[
-      {'stage':'规划','commands':['canvas-get','canvas-apply'],'action':'文字节点记录时长、画幅、风格与分镜；每镜一张图片和一个视频节点，从左到右排版。'},
+      {'stage':'规划','commands':['storyboard-plan','storyboard-apply'],'action':'准备 shots 列表，先 storyboard-plan 保存预览，再 storyboard-apply 创建说明→图片→视频布局。最多10镜，不提交生成；重试沿用同一份计划。'},
       {'stage':'构图','commands':['model-list','image-generate','generation-quote'],'action':'先看 --help/--schema 并 --validate-only；报价与授权后生成图片，--wait 回填。'},
       {'stage':'审图','commands':['canvas-get','image-generate'],'action':'检查色调、构图和真实感。需要修改时传原图 image，保存原版本；只修改需要调整的镜头。'},
       {'stage':'视频','commands':['video-generate','generation-quote','task-resume','task-download'],'action':'显式把已确认的图片 URL 放入 firstFrameImage，逐镜指定慢运镜。再次报价、授权；每任务独立记录，下载核对实际媒体规格。'},

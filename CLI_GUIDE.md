@@ -1,6 +1,17 @@
-# CLI 使用说明（v0.5.2）
+# CLI 使用说明（v0.6.0）
 
 下列命令中的 `python` 指安装了 requirements.txt 的虚拟环境解释器。原有 `--json`、`--file`、`--confirm-spend` 保持使用；默认仍输出完整接口 JSON。
+
+## 批量分镜布局
+
+用 `storyboard-plan --example` 获取镜头列表示例，填写后运行：
+
+```powershell
+python mira.py storyboard-plan --project-id <画布UUID> --file shots.json --out plan.json
+python mira.py storyboard-apply --file plan.json
+```
+
+第一步只读画布并保存布局预览，第二步新增节点和连线，不执行生成。支持说明→图片→视频、图片→视频、说明→图片三个模板，最多10镜，自动避开已有节点。重复应用同一计划不重复创建，版本冲突不自动覆盖。输入字段、模板和重试规则见 [分镜布局说明](STORYBOARD_GUIDE.md)。
 
 ## 查看真实字段与示例
 

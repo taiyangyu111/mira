@@ -1,6 +1,8 @@
 # 给 AI 的画布节点与创作流程指南
 
-目录版本：2026-11-17；Mira CLI v0.7.0。
+目录版本：2026-11-17；Mira CLI v0.8.0。
+
+从分镜开始的完整批次可用 `production-create/preflight/run/select/resume/status`，见 [执行计划指南](EXECUTION_GUIDE.md)。先预检报价，费用授权后执行；图片审阅选定后才准备视频。
 
 生成前用 `generation-check` 检查当前模型公开规则；已有任务可用 `batch-create/status/resume` 组批接续；下载成品用 `media-inspect` 验收实际规格，见 [生产流程指南](PRODUCTION_GUIDE.md)。
 

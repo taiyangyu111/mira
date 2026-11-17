@@ -144,7 +144,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.7.0')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.8.0')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -252,7 +252,38 @@ def main():
     media.add_argument('--expect-audio', choices=['yes', 'no'])
     media.add_argument('--duration-tolerance', type=float, default=1)
     media.add_argument('--fps-tolerance', type=float, default=0.1)
-    for custom in (check, batch_status, batch_resume, media):
+    production_create = commands.add_parser('production-create', help='从已应用的分镜布局创建执行计划，只读画布')
+    production_create.add_argument('--layout', type=Path, required=True, help='storyboard-plan 保存的布局文件')
+    production_create.add_argument('--out', type=Path, required=True, help='新执行计划文件，不覆盖')
+    production_create.add_argument('--image-model', help='节点未设置模型时使用的图片模型')
+    production_create.add_argument('--video-model', help='节点未设置模型时使用的视频模型')
+    production_create.add_argument('--image-size', help='可选统一图片尺寸，例如2560x1440；默认按画幅计算2K档位')
+    production_commands = {'production-create': production_create}
+    for name, description in (
+        ('production-preflight', '整批检查参数并报价，保存报价ID，不生成'),
+        ('production-status', '读取执行计划及每镜任务进度，不联网'),
+        ('production-select', '记录审图后选定的首帧，不生成'),
+        ('production-run', '按已审阅报价分阶段提交新任务，可能消耗积分'),
+        ('production-resume', '接续已有任务与回填，绝不提交新生成'),
+    ):
+        command = commands.add_parser(name, help=description, description=description)
+        command.add_argument('--file', type=Path, required=True)
+        if name == 'production-select':
+            selection = command.add_mutually_exclusive_group(required=True)
+            selection.add_argument('--shot', help='两位镜头ID，例如01')
+            selection.add_argument('--all', action='store_true', help='确认全部镜头当前图片已审阅')
+            command.add_argument('--source-node', help='可选使用同画布的另一图片节点，仅限单个镜头')
+        if name in ('production-run', 'production-resume'):
+            command.add_argument('--stage', choices=['images', 'videos'], required=True)
+        if name == 'production-run':
+            command.add_argument('--quote-id', required=True, help='已审阅的预检报价ID')
+            command.add_argument('--max-points', required=True, help='本阶段待提交任务的报价总额上限，不是实际结算硬上限')
+            command.add_argument('--confirm-spend', action='store_true', help='确认提交生成并可能扣费')
+        if name == 'production-resume':
+            command.add_argument('--timeout', type=float, default=0)
+            command.add_argument('--workers', type=int, default=3)
+        production_commands[name] = command
+    for custom in (check, batch_status, batch_resume, media, *production_commands.values()):
         custom.add_argument('--fields', help='逗号分隔的输出字段')
         custom.add_argument('--save-response', type=Path, help='保存完整报告，不覆盖')
     commands.add_parser('auth-save', help='在系统凭据库保存令牌')
@@ -262,7 +293,7 @@ def main():
                 any(getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id')))
     workflow_exit = 0
     try:
-        if options.operation in {'generation-check', 'batch-create', 'batch-status', 'batch-resume', 'media-inspect'}:
+        if options.operation in {'generation-check', 'batch-create', 'batch-status', 'batch-resume', 'media-inspect'} or options.operation in production_commands:
             if __package__:
                 from . import mira_cli_capabilities as capabilities, mira_cli_batch as batch, mira_cli_media as media_cli
             else:
@@ -273,7 +304,14 @@ def main():
             stream = destination.expanduser().open('x', encoding='utf-8') if destination else None
             received = False
             try:
-                if options.operation == 'generation-check':
+                if options.operation in production_commands:
+                    if __package__:
+                        from . import mira_cli_production as production
+                    else:
+                        import mira_cli_production as production
+                    result = production.command(options, call, origin)
+                    workflow_exit = result.get('exitCode', 2 if result.get('valid') is False else 0)
+                elif options.operation == 'generation-check':
                     raw = options.file.read_text(encoding='utf-8-sig') if options.file else options.json
                     result = capabilities.check(options.kind, json.loads(raw), call)
                     workflow_exit = 0 if result['valid'] else 2

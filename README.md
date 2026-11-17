@@ -1,10 +1,16 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.7.0**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.8.0**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
 此下载包仅包含 CLI，不包含 MCP 服务端。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务和访问令牌。
+
+## 分镜驱动的批量执行计划
+
+新增 `production-create`、`production-preflight`、`production-select`、`production-run`、`production-resume`、`production-status`。从已应用的分镜布局整理每镜参数，整批校验、逐镜报价，费用授权后分阶段提交；图片审阅选择后才准备视频，已有任务不重新生成。
+
+`production-run` 可能扣费，需要已审阅的报价ID、报价合计上限和 `--confirm-spend`；其余计划命令不提交新生成。报价过期、参数/价格变化或未知提交结果时停止。完整流程见 [执行计划指南](EXECUTION_GUIDE.md)。
 
 ## 模型规则、批量接续与成品验收
 
@@ -152,7 +158,7 @@ macOS 可用 `shasum -a 256 mira-cli.zip`，Linux 可用 `sha256sum mira-cli.zip
 当前提供 Python 脚本包，尚无免安装的独立可执行文件。
 
 
-## AI 节点目录与流程（v0.7.0）
+## AI 节点目录与流程（v0.8.0）
 
 先用 `node-list`、`workflow-list` 选择节点与流程，再用 `node-info --node video` 或 `workflow-info --workflow nature-video` 按需查询。目录仅覆盖前端可见基础节点；支持字段筛选、创建节点示例与保存结果，不联网、不要求令牌、不提交生成。详见 [节点与流程指南](NODE_GUIDE.md)。
 

@@ -1,6 +1,10 @@
-# CLI 使用说明（v0.7.0）
+# CLI 使用说明（v0.8.0）
 
 下列命令中的 `python` 指安装了 requirements.txt 的虚拟环境解释器。原有 `--json`、`--file`、`--confirm-spend` 保持使用；默认仍输出完整接口 JSON。
+
+## 从分镜到批量执行
+
+`production-create` 从已应用的布局文件整理每镜参数；`production-preflight` 整批校验并报价；`production-run` 在费用授权后分阶段提交；`production-select` 记录审图选择；`production-resume` 只接续已有任务。`production-status` 查询进度。完整示例及费用控制见 [执行计划指南](EXECUTION_GUIDE.md)。
 
 ## 模型规则、批次与验收
 

@@ -60,6 +60,18 @@ NODES = {
 }
 
 WORKFLOWS = {
+ 'planned-film': {
+    'label':'分镜驱动的批量执行计划','purpose':'整批预检报价、构图审阅、视频生成与中断接续', 'nodes':['text','image','video'],
+    'steps':[
+      {'stage':'布局','commands':['storyboard-plan','storyboard-apply'],'action':'创建并应用分镜布局，保留布局文件。'},
+      {'stage':'执行计划','commands':['production-create','production-preflight'],'action':'从当前节点整理参数，整批检查并逐镜报价。审阅实际尺寸、模型与费用；未知项不等于通过。'},
+      {'stage':'构图','commands':['production-run','production-resume'],'action':'费用授权后带 quote-id/max-points/confirm-spend 执行 images 阶段；接续只查询已有任务，不重生成。'},
+      {'stage':'审图','commands':['production-select','production-preflight'],'action':'实际查看图片，选定每镜首帧，再重新预检报价；未选定时视频不会提交。'},
+      {'stage':'视频','commands':['production-run','production-resume','production-status'],'action':'再次费用授权后执行 videos 阶段，独立记录每镜任务；失败先处理，不删除记录重生成。'},
+      {'stage':'验收','commands':['task-download','media-inspect'],'action':'按任务ID下载并验收实际文件，剪辑混音仍使用外部工具。'},
+    ],
+    'pitfalls':['max-points 是待提交报价上限，不是服务端结算硬上限','15分钟报价过期需重查','不要只移动计划文件而丢失同目录的 .mira 执行记录'],
+ },
  'nature-video': {
     'label':'约一分钟自然风景视频','purpose':'从分镜、构图到镜头和配乐成片',
     'nodes':['text','image','video','audio'],

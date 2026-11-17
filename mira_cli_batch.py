@@ -71,7 +71,7 @@ def row(path, state):
     else:
         status = 'running'
     return {'runFile': str(path), 'status': status, **{k: state.get(k) for k in (
-        'taskId', 'phase', 'generation', 'attachment', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'error')}}
+        'taskId', 'phase', 'generation', 'attachment', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error')}}
 
 
 def error_row(path, exc):
@@ -115,9 +115,7 @@ def status(path, base, call, refresh=False):
                         try:
                             node, _ = jobs.target_node(canvases[project], state['nodeId'], state.get('kind'))
                             metadata = node.get('metadata') or {}
-                            matches = metadata.get('taskId') == state['taskId'] and all(
-                                jobs.normalized(metadata.get(key)) == jobs.normalized(info['resultUrl'])
-                                for key in ('src', 'resultUrl'))
+                            matches = jobs.attached_results(metadata, state)
                             if matches:
                                 state.update(phase='attached', attachment='succeeded', error=None)
                             elif state.get('phase') == 'attached':

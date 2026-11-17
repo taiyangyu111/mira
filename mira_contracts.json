@@ -925,16 +925,10 @@
             "title": "Id"
           },
           "title": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Title"
+            "type": "string",
+            "description": "必填画布名称，概括创作内容，不能只含空白字符",
+            "minLength": 1,
+            "pattern": "\\S"
           },
           "description": {
             "anyOf": [
@@ -1001,7 +995,10 @@
         },
         "title": "CanvasProjectMutation",
         "type": "object",
-        "additionalProperties": false
+        "additionalProperties": false,
+        "required": [
+          "title"
+        ]
       },
       "aliases": {
         "thumbnail_url": "thumbnailUrl",
@@ -1010,13 +1007,13 @@
         "data": "payload"
       },
       "example": {
-        "title": "我的创作画布",
+        "title": "草原与森林｜治愈短片",
         "payload": {
           "nodes": [],
           "connections": []
         }
       },
-      "notes": ""
+      "notes": "创建画布必须填写 title；根据创作主题取简洁明确的名称，用于画布列表展示，不要直接粘贴整段提示词。"
     },
     "canvas-apply": {
       "schema": {

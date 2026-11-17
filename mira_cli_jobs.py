@@ -116,7 +116,7 @@ def fingerprint(node, ignore_runtime=False, normalize_numbers=False):
         value = canonical_numbers(value)
     if ignore_runtime and isinstance(value.get('metadata'), dict):
         for key in ('taskId', 'status', 'taskStatus', 'progress', 'errorMessage', 'imageGenerationStage',
-                    'canvasPreparation', 'canUseForGeneration', 'updatedAt'):
+                    'canvasPreparation', 'canUseForGeneration', 'updatedAt', 'cliSubmissionId'):
             value['metadata'].pop(key, None)
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
@@ -140,11 +140,30 @@ def public_task(response):
     task = response.get('task') or response
     if not isinstance(task, dict):
         raise ValueError('响应中的 task 不是 JSON 对象')
+    primary = task.get('result_url') or task.get('resultUrl')
+    metadata = task.get('metadata_json') or task.get('metadata') or {}
+    urls = task.get('resultUrls') or metadata.get('resultUrls') or metadata.get('result_urls') or []
+    # Never bypass the server's result publication/review gate with raw metadata.
+    urls = [url for url in urls if isinstance(url, str) and url.strip()] if primary and isinstance(urls, list) else []
+    unique = {}
+    for url in ([primary] if primary else []) + urls:
+        unique.setdefault(normalized(url), url)
+    urls = list(unique.values())
+    count = task.get('resultCount') or metadata.get('resultCount')
+    if primary and isinstance(count, int) and count > len(urls):
+        raise ValueError('任务响应只有部分预览图，缺少完整结果列表；未报告回填成功，请查询完整任务详情后接续')
     return {'taskId': response.get('task_id') or response.get('taskId') or task.get('id'),
             'taskType': task.get('type'), 'taskStatus': str(task.get('status') or response.get('status') or '').lower(),
-            'progress': task.get('progress'), 'resultUrl': task.get('result_url') or task.get('resultUrl'),
+            'progress': task.get('progress'), 'resultUrl': primary, 'resultUrls': urls,
             'thumbnailUrl': task.get('thumbnail_url') or task.get('thumbnailUrl'),
             'taskError': task.get('error_message') or task.get('errorMessage') or response.get('message')}
+
+
+def attached_results(metadata, state):
+    expected = normalized(state.get('resultUrls') or [state.get('resultUrl')])
+    actual = normalized(metadata.get('resultUrls') or [metadata.get('resultUrl')])
+    return (metadata.get('taskId') == state.get('taskId') and actual == expected
+            and normalized(metadata.get('src')) in expected and normalized(metadata.get('resultUrl')) in expected)
 
 
 class Runner:
@@ -156,12 +175,13 @@ class Runner:
         return self.call(operation, arguments, base=self.base, request_timeout=timeout)
 
     def report(self, state, path):
-        keys = ('phase', 'generation', 'attachment', 'taskId', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'error', 'operationId', 'statusSyncError')
+        keys = ('phase', 'generation', 'attachment', 'taskId', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'operationId', 'statusSyncError')
         result = {k: state.get(k) for k in keys}
         result.update(runFile=str(path), origin=self.base, resume=['task-resume', '--run-file', str(path)])
-        result['exitCode'] = 0 if state['phase'] in {'completed', 'attached'} else (3 if state['phase'] in {'wait_timeout', 'interrupted'} else 4)
+        result['exitCode'] = 0 if state['phase'] in {'submitted', 'completed', 'attached'} else (3 if state['phase'] in {'wait_timeout', 'interrupted'} else 4)
         result['nextAction'] = {
             'completed': '已取得结果，无需重新提交。', 'attached': '已回填，无需重新提交。',
+            'submitted': '已提交并保存任务记录；使用 task-resume 查询或等待，不要重复提交生成。',
             'attach_failed': '修复回填问题后使用 task-resume；不要再次生成。',
             'generation_failed': '生成已失败，请查看原因后决定是否另开新任务；不要无意义地重复轮询。',
             'submission_unknown': '请先在网站核对任务记录，取得任务 ID 后使用 task-wait；不要重复提交。',
@@ -184,7 +204,39 @@ class Runner:
         self.persist(state, path)
         return self.report(state, path)
 
-    def start(self, operation, arguments, *, path=None, project_id=None, node_id=None, timeout=600, poll_interval=5, task_id=None):
+    def claim_target(self, state, path):
+        """Use the canvas version as a cross-client compare-and-set before billing."""
+        claim = state['submissionId']
+        for attempt in range(3):
+            canvas = self.request('canvas-get', {'project_id': state['projectId']})
+            node, version = target_node(canvas, state['nodeId'], state['kind'])
+            metadata = dict(node.get('metadata') or {})
+            if metadata.get('cliSubmissionId') == claim:
+                return
+            previous_task = metadata.get('taskId')
+            if previous_task:
+                previous = public_task(self.request('task-get', {'task_id': previous_task}))
+                if str(previous.get('taskId')) != str(previous_task) or previous['taskStatus'] not in SUCCEEDED | FAILED:
+                    raise ValueError('目标节点已有未结束任务，请使用 task-wait/task-resume 接续；未重复生成')
+            elif metadata.get('cliSubmissionId') or str(metadata.get('taskStatus') or metadata.get('status') or '').lower() in PENDING | {'submitting'}:
+                raise ValueError('目标节点已被其他提交占用或提交结果待确认，请核对原任务记录；未重复生成')
+            if fingerprint(node, ignore_runtime=True, normalize_numbers=True) != state['targetFingerprint']:
+                raise ValueError('提交前节点已修改，未提交生成')
+            metadata.pop('taskId', None)
+            metadata.update(cliSubmissionId=claim, status='running', taskStatus='submitting', progress=0,
+                            errorMessage='', imageGenerationStage='正在提交')
+            try:
+                self.request('canvas-apply', {'project_id': state['projectId'], 'baseVersion': version,
+                    'operationId': 'cli-claim-' + claim, 'actions': [{'type': 'update_node', 'payload': {
+                        'nodeId': state['nodeId'], 'changes': {'metadata': metadata}}}]})
+                return
+            except ERRORS as exc:
+                if attempt == 2 or (not isinstance(exc, httpx.HTTPError) and 'Mira HTTP 409 ' not in str(exc)):
+                    raise
+                # A lost acknowledgement may already have saved our claim.
+        raise ValueError('无法确认目标节点占用，未提交生成')
+
+    def start(self, operation, arguments, *, path=None, project_id=None, node_id=None, timeout=600, poll_interval=5, task_id=None, wait=True):
         path = (Path(path) if path else Path.cwd()/'.mira/runs'/f'{uuid4()}.json').expanduser().resolve()
         with locked(path):
             # Reusing a receipt can never submit a second generation.
@@ -206,6 +258,10 @@ class Runner:
                     self.persist(state, path)
                 if task_id:
                     return self.wait(state, path, timeout, poll_interval)
+                if project_id:
+                    state.update(submissionId=str(uuid4()), originalTaskId=None)
+                    self.persist(state, path)
+                    self.claim_target(state, path)
                 # Save uncertainty before entering the network: crash/timeout must never resubmit.
                 state.update(phase='submitting', generation='unknown')
                 self.persist(state, path)
@@ -220,6 +276,10 @@ class Runner:
                 state.update(phase='waiting', generation='pending')
                 self.persist(state, path)
                 self.announce(json.dumps({'taskId': state['taskId'], 'runFile': str(path), 'message': '任务已提交；中断后使用 task-resume 接续'}, ensure_ascii=False))
+                if not wait:
+                    self.sync_status(state, path)
+                    receipt = self.finish(state, path, 'submitted')
+                    return {**response, **receipt}
                 return self.wait(state, path, timeout, poll_interval, initial=response)
             except KeyboardInterrupt:
                 return self.finish(state, path, 'interrupted', '已停止等待；未取消服务端任务。')
@@ -289,6 +349,9 @@ class Runner:
 
     def check_target(self, state, node):
         modern = state.get('fingerprintVersion') in (2, 3)
+        claim = (node.get('metadata') or {}).get('cliSubmissionId')
+        if state.get('submissionId') and claim not in (None, state['submissionId']):
+            raise ValueError('目标节点已被另一个提交占用，已停止同步')
         if modern and (node.get('metadata') or {}).get('taskId') not in {state.get('taskId'), state.get('originalTaskId')}:
             raise ValueError('目标节点已关联其他任务，已停止同步，避免覆盖新的生成。')
         if fingerprint(node, ignore_runtime=modern, normalize_numbers=state.get('fingerprintVersion') == 3) != state.get('targetFingerprint'):
@@ -354,19 +417,35 @@ class Runner:
                 canvas = self.request('canvas-get', {'project_id': state['projectId']})
                 node, version = target_node(canvas, state['nodeId'], state['kind'])
                 metadata = dict(node.get('metadata') or {})
-                if (metadata.get('taskId') == state['taskId'] and normalized(metadata.get('resultUrl')) == normalized(state['resultUrl'])
-                        and normalized(metadata.get('src')) == normalized(state['resultUrl'])):
+                if attached_results(metadata, state):
                     state.update(attachment='succeeded', statusSyncError=None)
                     return self.finish(state, path, 'attached')
-                self.check_target(state, node)
+                urls = state.get('resultUrls') or [state['resultUrl']]
+                expected = normalized(urls)
+                own_partial = (metadata.get('taskId') == state['taskId']
+                    and normalized(metadata.get('resultUrl')) in expected and normalized(metadata.get('src')) in expected
+                    and all(normalized(url) in expected for url in metadata.get('resultUrls') or []))
+                if not own_partial:
+                    self.check_target(state, node)
+                else:
+                    # Old clients may already have committed the original operationId
+                    # with only one image. A repair needs a new, persisted idempotency key.
+                    result_set = hashlib.sha256(json.dumps(expected, ensure_ascii=False).encode()).hexdigest()
+                    if state.get('attachmentResultsFingerprint') != result_set:
+                        state['operationId'] = 'cli-attach-' + hashlib.sha256((state['operationId'] + result_set).encode()).hexdigest()[:48]
+                        state['attachmentResultsFingerprint'] = result_set
+                        self.persist(state, path)
+                selected = metadata.get('src') if own_partial else state['resultUrl']
+                selected_index = expected.index(normalized(selected))
                 # These identify the old output, not input references. The server
                 # registers and checks the new media; never copy old approval flags.
                 for key in ('materialId', 'fileKey', 'storageKey', 'assetId', 'assetUri', 'assetStatus',
                             'volcAsset', 'canvasPreparation', 'canUseForGeneration', 'referenceUrl', 'url',
                             'fileName', 'mimeType', 'format'):
                     metadata.pop(key, None)
-                metadata.update(taskId=state['taskId'], resultUrl=state['resultUrl'], src=state['resultUrl'],
-                                resultUrls=[state['resultUrl']], activeResultIndex=0, status='succeeded', taskStatus='completed', progress=100,
+                metadata.pop('cliSubmissionId', None)
+                metadata.update(taskId=state['taskId'], resultUrl=urls[selected_index], src=urls[selected_index],
+                                resultUrls=urls, activeResultIndex=selected_index, status='succeeded', taskStatus='completed', progress=100,
                                 errorMessage='', imageGenerationStage='已完成')
                 if state.get('thumbnailUrl'):
                     metadata['thumbnailUrl'] = state['thumbnailUrl']

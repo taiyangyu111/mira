@@ -1,4 +1,13 @@
-# CLI 使用说明（v0.9.0）
+# CLI 使用说明（v0.9.2）
+
+## 生成与批次可靠性（v0.9.2）
+
+- 图片、视频、音频生成即使不加 `--wait`，也会先在 `.mira/runs/` 保存记录，再提交一次；立即返回的回执保留原任务响应，并增加 `runFile`、`resume`、`phase`。使用 `task-resume --run-file ...` 接续，不要重复执行生成。
+- 指定目标节点时，CLI 会先按画布版本占用节点。已有未结束任务、另一终端正在提交、或提交结果尚未确认时，换记录文件也不能重复生成。收到明确任务 ID 前的断网会保留占位和记录，需核对网站任务，再用 `task-wait --task-id ...` 关联已有结果；不会自动重发生成。
+- 多图任务完整回填 `resultUrls`；旧版只回填一张的记录可以用 `task-resume` 补齐，不重新生成。只返回部分预览图时不会报告完整回填成功。
+- `batch-status` 的进程退出码与 JSON 一致：0=全部完成，3=仍有任务待处理，4=存在失败或需要人工核对。`--summary`、`--save-response`、`--fields` 不改变退出状态。
+
+创建画布时 `canvas-create` 的 `title` 必填，不能为 null、空字符串或纯空白。AI 应根据创作主题取简洁明确的名称，例如“草原与森林｜治愈短片”，不要把整段需求当作标题。画布列表直接展示该名称。漏填会在发送请求前报错，`--skip-validation` 也不能绕过命名要求。
 
 下列命令中的 `python` 指安装了 requirements.txt 的虚拟环境解释器。原有 `--json`、`--file`、`--confirm-spend` 保持使用；默认仍输出完整接口 JSON。
 
@@ -129,7 +138,7 @@ python mira.py canvas-get --file canvas.json --summary --save-response full-canv
 
 ## 自动等待与回填（v0.3.0）
 
-适用于 `image-generate`、`video-generate`、`audio-generate`。文本生成当前仍为同步调用，不使用这组任务等待选项。原有不带等待选项的提交方式保持原样。
+适用于 `image-generate`、`video-generate`、`audio-generate`。文本生成当前仍为同步调用，不使用这组任务等待选项。不带等待选项仍立即返回，但从 v0.9.2 起会自动保存可接续记录。
 
 生成时等待，并把结果放回已经存在的媒体节点：
 

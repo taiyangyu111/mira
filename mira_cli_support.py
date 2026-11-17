@@ -59,6 +59,8 @@ def validate_arguments(operation, arguments):
     if _nonfinite(arguments):
         error('$', '不允许 NaN 或 Infinity，请使用有限数值')
     values = dict(arguments)
+    if operation == 'canvas-create' and (not isinstance(values.get('title'), str) or not values['title'].strip()):
+        error('title', '创建画布必须填写名称，请根据创作内容填写非空 title')
     for alias, target in entry.get('aliases', {}).items():
         if alias in values:
             if target in values and values[target] != values[alias]:

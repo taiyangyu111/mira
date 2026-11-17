@@ -72,6 +72,8 @@ def saved_token(base):
 def call(operation, arguments=None, *, token=None, base=None, upload_root=None, request_timeout=90):
     method, path, _ = OPERATIONS[operation]
     arguments = dict(arguments or {})
+    if operation == 'canvas-create' and (not isinstance(arguments.get('title'), str) or not arguments['title'].strip()):
+        raise ValueError('创建画布必须填写名称，请根据创作内容填写非空 title')
     for key in ('project_id', 'asset_id', 'task_id', 'material_id'):
         placeholder = '{' + key + '}'
         if placeholder in path:
@@ -144,7 +146,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.9.0')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.9.2')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -295,8 +297,9 @@ def main():
     login_command.add_argument('--timeout', type=float, default=300, help='等待授权的秒数，最多 300 秒')
     commands.add_parser('auth-clear', help='移除本机保存的令牌')
     options = parser.parse_args()
-    managed = options.operation in {'task-wait', 'task-resume'} or (options.operation in jobs.MEDIA_OPERATIONS and
-                any(getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id')))
+    managed = options.operation in {'task-wait', 'task-resume'} or options.operation in jobs.MEDIA_OPERATIONS
+    wait_requested = options.operation in {'task-wait', 'task-resume'} or any(
+        getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id'))
     workflow_exit = 0
     try:
         if options.operation in {'generation-check', 'batch-create', 'batch-status', 'batch-resume', 'media-inspect'} or options.operation in production_commands:
@@ -325,6 +328,7 @@ def main():
                     result = batch.create(options.run_file, options.out, origin(), options.name)
                 elif options.operation == 'batch-status':
                     result = batch.status(options.file, origin(), call, options.refresh)
+                    workflow_exit = result['exitCode']
                 elif options.operation == 'batch-resume':
                     result = batch.resume(options.file, origin(), call, timeout=options.timeout,
                                           poll_interval=options.poll_interval, workers=options.workers,
@@ -470,7 +474,7 @@ def main():
                         result = runner.start(options.operation, arguments, path=options.run_file,
                                               project_id=options.project_id, node_id=options.node_id,
                                               task_id=getattr(options, 'task_id', None), timeout=options.timeout,
-                                              poll_interval=options.poll_interval)
+                                              poll_interval=options.poll_interval, wait=wait_requested)
                     workflow_exit = result['exitCode']
                 else:
                     result = call('model-list' if options.operation == 'model-info' else options.operation, arguments)
@@ -489,7 +493,7 @@ def main():
                     stream.close()
                     if not response_received:
                         destination.unlink(missing_ok=True)
-            has_view = managed or any(getattr(options, k, None) for k in ('summary', 'node_id', 'kind', 'fields')) or options.operation == 'model-info'
+            has_view = (managed and wait_requested) or any(getattr(options, k, None) for k in ('summary', 'node_id', 'kind', 'fields')) or options.operation == 'model-info'
             if destination and not has_view:
                 receipt = {'savedResponse': str(destination.resolve())}
                 if isinstance(result, dict):
@@ -497,6 +501,8 @@ def main():
                         receipt.update({k: v for k, v in cli.task_view(result).items() if v is not None})
                     elif result.get('id') is not None:
                         receipt['id'] = result['id']
+                    if managed:
+                        receipt.update({k: result.get(k) for k in ('phase', 'runFile', 'resume', 'nextAction', 'exitCode')})
                 result = receipt
             else:
                 result = cli.output_view(options.operation, result, summary=getattr(options, 'summary', False),

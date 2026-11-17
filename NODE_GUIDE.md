@@ -1,6 +1,8 @@
 # 给 AI 的画布节点与创作流程指南
 
-目录版本：2026-11-17；Mira CLI v0.6.0。
+目录版本：2026-11-17；Mira CLI v0.7.0。
+
+生成前用 `generation-check` 检查当前模型公开规则；已有任务可用 `batch-create/status/resume` 组批接续；下载成品用 `media-inspect` 验收实际规格，见 [生产流程指南](PRODUCTION_GUIDE.md)。
 
 批量分镜可直接使用 `storyboard-plan` 预览、`storyboard-apply` 应用，见 [分镜布局指南](STORYBOARD_GUIDE.md)。这两个命令只创建可见节点和连线，不提交生成。
 

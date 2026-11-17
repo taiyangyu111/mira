@@ -1,10 +1,18 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.6.0**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.7.0**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
 此下载包仅包含 CLI，不包含 MCP 服务端。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务和访问令牌。
+
+## 模型规则、批量接续与成品验收
+
+- `generation-check --kind video --file video.json`：读取当前站点模型规则，报告具体参数问题，不生成。实际提交可加 `--check-model`。旧站点没有规则时明确提示未检查；严格检查会停止提交。
+- `batch-create`、`batch-status`、`batch-resume`：把已有任务记录组批，汇总状态、接续等待或仅重试回填，不重复生成；支持 `--summary`。
+- `media-inspect --file final.mp4`：检查本机成品实际尺寸、时长、帧率、音轨，可与预期比较。需要 FFmpeg 中的 ffprobe。
+
+见 [生产流程指南](PRODUCTION_GUIDE.md) 的完整参数、示例和能力边界。新模型规则需要相应服务端版本；仅升级 CLI 不会更新服务端。
 
 ## 批量分镜布局
 
@@ -144,7 +152,7 @@ macOS 可用 `shasum -a 256 mira-cli.zip`，Linux 可用 `sha256sum mira-cli.zip
 当前提供 Python 脚本包，尚无免安装的独立可执行文件。
 
 
-## AI 节点目录与流程（v0.6.0）
+## AI 节点目录与流程（v0.7.0）
 
 先用 `node-list`、`workflow-list` 选择节点与流程，再用 `node-info --node video` 或 `workflow-info --workflow nature-video` 按需查询。目录仅覆盖前端可见基础节点；支持字段筛选、创建节点示例与保存结果，不联网、不要求令牌、不提交生成。详见 [节点与流程指南](NODE_GUIDE.md)。
 

@@ -208,6 +208,14 @@ def model_view(config, kind=None, model=None):
         row['parameterSchema'] = contracts()[row['kind'] + '-generate']['schema']
         row['limits'] = {'referenceImages': None, 'referenceVideos': None, 'referenceAudios': None, 'outputCount': None, 'mediaFormats': None}
         row['notes'] = ['parameterSchema 是通用接口规则，不代表模型专属上限。', 'limits 中 null 表示服务端公开目录未提供，不能解释为无限制。', 'resolutions（若存在）来自当前服务端模型配置。']
+        if __package__:
+            from .mira_cli_capabilities import capability
+        else:
+            from mira_cli_capabilities import capability
+        rules = capability(config, row['kind'], row['id'])
+        if rules:
+            row['capabilities'] = rules
+            row['limits'] = rules.get('limits', row['limits'])
         return row
     warnings = []
     if (kind is None or kind == 'audio') and 'audios' not in catalog:

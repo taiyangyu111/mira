@@ -144,7 +144,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.6.0')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.7.0')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -176,6 +176,8 @@ def main():
             command.add_argument('--kind', choices=['image', 'video', 'text', 'audio'], help='仅输出指定类型的公开模型目录')
         if name in GENERATION_OPERATIONS:
             command.add_argument('--confirm-spend', action='store_true', help='确认执行可能消耗积分的操作')
+        if name in {'image-generate', 'video-generate'}:
+            command.add_argument('--check-model', action='store_true', help='提交前读取当前服务端模型规则并检查；仅检查请用 generation-check')
         if name in jobs.MEDIA_OPERATIONS:
             command.add_argument('--wait', action='store_true', help='等待图片/视频/音频结果；指定回填目标或记录文件也会启用等待')
             job_options(command)
@@ -222,6 +224,37 @@ def main():
     storyboard.add_argument('--y', type=float, help='可选起点；默认放到已有内容下方')
     storyboard_apply = commands.add_parser('storyboard-apply', help='应用保存的布局计划，只新增节点和连线，不生成')
     storyboard_apply.add_argument('--file', type=Path, required=True, help='storyboard-plan 保存的计划；重试沿用原文件')
+    check = commands.add_parser('generation-check', help='读取当前模型规则，检查图片/视频参数，不生成')
+    check.add_argument('--kind', choices=['image', 'video'], required=True)
+    check_inputs = check.add_mutually_exclusive_group(required=True)
+    check_inputs.add_argument('--file', type=Path)
+    check_inputs.add_argument('--json')
+    batch_create = commands.add_parser('batch-create', help='将已有任务记录组成批次，不生成')
+    batch_create.add_argument('--run-file', type=Path, action='append', required=True, help='重复指定，每批最多100个已有记录')
+    batch_create.add_argument('--out', type=Path, required=True, help='新批次文件，不覆盖')
+    batch_create.add_argument('--name')
+    batch_status = commands.add_parser('batch-status', help='汇总任务与回填状态，默认读取本地记录')
+    batch_status.add_argument('--file', type=Path, required=True)
+    batch_status.add_argument('--refresh', action='store_true', help='向服务端查询最新任务状态，不回填、不改记录')
+    batch_status.add_argument('--summary', action='store_true', help='只输出计数及需要处理的任务')
+    batch_resume = commands.add_parser('batch-resume', help='接续整批已有任务，自动回填；不重新生成')
+    batch_resume.add_argument('--file', type=Path, required=True)
+    batch_resume.add_argument('--timeout', type=float, default=0, help='批次等待秒数，0为每任务仅检查一次')
+    batch_resume.add_argument('--poll-interval', type=float, default=5)
+    batch_resume.add_argument('--workers', type=int, default=3, help='并行查询/回填数量，1–8，默认3')
+    batch_resume.add_argument('--attachments-only', action='store_true', help='仅重试已生成成功的待回填/回填失败任务')
+    batch_resume.add_argument('--summary', action='store_true', help='只输出计数及需要处理的任务')
+    media = commands.add_parser('media-inspect', help='验收本机成品实际尺寸、时长、帧率和音轨，不联网')
+    media.add_argument('--file', type=Path, required=True)
+    media.add_argument('--ffprobe', help='ffprobe 可执行文件路径；也可设置 MIRA_FFPROBE 或 PATH')
+    for name, kind in [('width', int), ('height', int), ('duration', float), ('fps', float)]:
+        media.add_argument('--expect-' + name, type=kind)
+    media.add_argument('--expect-audio', choices=['yes', 'no'])
+    media.add_argument('--duration-tolerance', type=float, default=1)
+    media.add_argument('--fps-tolerance', type=float, default=0.1)
+    for custom in (check, batch_status, batch_resume, media):
+        custom.add_argument('--fields', help='逗号分隔的输出字段')
+        custom.add_argument('--save-response', type=Path, help='保存完整报告，不覆盖')
     commands.add_parser('auth-save', help='在系统凭据库保存令牌')
     commands.add_parser('auth-clear', help='移除本机保存的令牌')
     options = parser.parse_args()
@@ -229,6 +262,64 @@ def main():
                 any(getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id')))
     workflow_exit = 0
     try:
+        if options.operation in {'generation-check', 'batch-create', 'batch-status', 'batch-resume', 'media-inspect'}:
+            if __package__:
+                from . import mira_cli_capabilities as capabilities, mira_cli_batch as batch, mira_cli_media as media_cli
+            else:
+                import mira_cli_capabilities as capabilities, mira_cli_batch as batch, mira_cli_media as media_cli
+            if getattr(options, 'fields', None) and any(not part.strip() for part in options.fields.split(',')):
+                raise ValueError('--fields 不允许空字段名')
+            destination = getattr(options, 'save_response', None)
+            stream = destination.expanduser().open('x', encoding='utf-8') if destination else None
+            received = False
+            try:
+                if options.operation == 'generation-check':
+                    raw = options.file.read_text(encoding='utf-8-sig') if options.file else options.json
+                    result = capabilities.check(options.kind, json.loads(raw), call)
+                    workflow_exit = 0 if result['valid'] else 2
+                elif options.operation == 'batch-create':
+                    result = batch.create(options.run_file, options.out, origin(), options.name)
+                elif options.operation == 'batch-status':
+                    result = batch.status(options.file, origin(), call, options.refresh)
+                elif options.operation == 'batch-resume':
+                    result = batch.resume(options.file, origin(), call, timeout=options.timeout,
+                                          poll_interval=options.poll_interval, workers=options.workers,
+                                          attachments_only=options.attachments_only)
+                    workflow_exit = result['exitCode']
+                else:
+                    expected = {key: getattr(options, 'expect_' + key) for key in ('width', 'height', 'duration', 'fps')
+                                if getattr(options, 'expect_' + key) is not None}
+                    if options.expect_audio is not None:
+                        expected['hasAudio'] = options.expect_audio == 'yes'
+                    result = media_cli.inspect(options.file, ffprobe=options.ffprobe, expected=expected,
+                                               duration_tolerance=options.duration_tolerance, fps_tolerance=options.fps_tolerance)
+                    workflow_exit = 2 if result['passed'] is False else 0
+                received = True
+                if stream:
+                    json.dump(result, stream, ensure_ascii=False, indent=2)
+                    stream.write('\n')
+                    stream.flush()
+            except OSError as exc:
+                if received:
+                    print(json.dumps({'saveError': str(exc), 'response': result}, ensure_ascii=False, indent=2))
+                raise
+            finally:
+                if stream:
+                    stream.close()
+                    if not received:
+                        destination.expanduser().unlink(missing_ok=True)
+            if getattr(options, 'summary', False):
+                result = {**{k: v for k, v in result.items() if k != 'tasks'},
+                          'attention': [{k: r.get(k) for k in ('runFile', 'taskId', 'nodeId', 'status', 'error')}
+                                        for r in result['tasks'] if r['status'] != 'completed']}
+            if getattr(options, 'fields', None):
+                result = cli.select_fields(result, options.fields)
+            elif destination and not getattr(options, 'summary', False):
+                result = {'savedResponse': str(destination.expanduser().resolve()), 'exitCode': workflow_exit}
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            if workflow_exit:
+                parser.exit(workflow_exit)
+            return
         if options.operation in {'storyboard-plan', 'storyboard-apply'}:
             if __package__:
                 from . import mira_cli_storyboard as storyboard_cli
@@ -282,6 +373,8 @@ def main():
                 arguments = json.loads(raw) if raw else {}
                 if not isinstance(arguments, dict):
                     raise ValueError('操作参数必须是 JSON 对象')
+                if getattr(options, 'check_model', False) and options.validate_only:
+                    raise ValueError('--validate-only 只做离线检查；联网检查模型请使用 generation-check')
                 if not options.skip_validation:
                     report = cli.validate_arguments(options.operation, arguments)
                     if options.validate_only:
@@ -295,6 +388,20 @@ def main():
                         print('提示：' + warning, file=sys.stderr)
                 if options.operation in GENERATION_OPERATIONS and not options.confirm_spend:
                     raise ValueError('此操作可能消耗积分，请先查看报价并传入 --confirm-spend')
+                if getattr(options, 'check_model', False):
+                    if options.skip_validation:
+                        raise ValueError('--check-model 不能与 --skip-validation 同用')
+                    if __package__:
+                        from . import mira_cli_capabilities as capabilities
+                    else:
+                        import mira_cli_capabilities as capabilities
+                    report = capabilities.check(options.operation.split('-')[0], arguments, call)
+                    if not report['valid']:
+                        parser.exit(2, '模型参数检查失败，未提交生成：\n' + json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+                    if not report['modelChecked']:
+                        raise ValueError('服务端未提供可用的模型规则，--check-model 未通过；请先核对 model-info。')
+                    for warning in report['warnings']:
+                        print('模型提示：' + warning, file=sys.stderr)
             else:
                 arguments = {}
             if options.fields and any(not part.strip() for part in options.fields.split(',')):

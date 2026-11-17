@@ -1,6 +1,10 @@
-# CLI 使用说明（v0.6.0）
+# CLI 使用说明（v0.7.0）
 
 下列命令中的 `python` 指安装了 requirements.txt 的虚拟环境解释器。原有 `--json`、`--file`、`--confirm-spend` 保持使用；默认仍输出完整接口 JSON。
+
+## 模型规则、批次与验收
+
+新增 `generation-check` 查询当前站点的版本化模型规则；图片/视频提交可加 `--check-model`。新增 `batch-create`、`batch-status`、`batch-resume` 管理已有任务，只接续、不重新生成。新增 `media-inspect` 检查本机成品的实际技术规格。完整示例、未知规则处理和退出码见 [生产流程指南](PRODUCTION_GUIDE.md)。
 
 ## 批量分镜布局
 

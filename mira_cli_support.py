@@ -106,6 +106,27 @@ def validate_arguments(operation, arguments):
         refs = any(values.get(k) for k in ('firstFrameImage', 'lastFrameImage', 'referenceImages', 'referenceVideos', 'referenceAudios', 'imageUrl'))
         if not refs and not str(values.get('prompt') or '').strip():
             error('prompt', '没有参考素材时必须填写提示词')
+        # Mirror the server's mode rules, including its H3 provider exceptions.
+        model = str(values.get('model') or '').strip().lower().replace('_', '-')
+        h3_models = {'runninghub-minimax-h3', 'minimax-h3', 'hailuo-h3', 'minimax-h3-multimodal',
+                     'runninghub-minimax-h3-turbo', 'minimax-h3-turbo', 'hailuo-h3-turbo', 'minimax-h3-turbo-ai-app'}
+        if model not in h3_models:
+            mode = values.get('mode', 'text_to_video')
+            if mode in ('image_to_video', 'first_last_frame') and not values.get('firstFrameImage'):
+                error('firstFrameImage', f'mode={mode} 时必须提供首帧图片地址')
+            if mode == 'first_last_frame' and not values.get('lastFrameImage'):
+                error('lastFrameImage', '首尾帧模式必须提供尾帧图片地址')
+            reference_fields = ('referenceImages', 'referenceVideos', 'referenceAudios')
+            if mode == 'multimodal':
+                for field in ('firstFrameImage', 'lastFrameImage'):
+                    if values.get(field):
+                        error(field, '多模态模式不能混用首尾帧，请使用 referenceImages/referenceVideos/referenceAudios')
+                if not any(values.get(field) for field in reference_fields):
+                    error('referenceImages', '多模态模式至少提供 referenceImages、referenceVideos、referenceAudios 中的一种素材')
+            else:
+                for field in reference_fields:
+                    if values.get(field):
+                        error(field, '参考素材数组只用于 mode=multimodal，不能与其他模式混用')
     if operation == 'text-generate':
         messages = values.get('messages')
         if isinstance(messages, list) and not any(isinstance(x, dict) and x.get('role') == 'user' for x in messages):

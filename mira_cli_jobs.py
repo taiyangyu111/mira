@@ -16,7 +16,7 @@ import httpx
 MEDIA_OPERATIONS = {'image-generate': 'image', 'video-generate': 'video', 'audio-generate': 'audio'}
 SUCCEEDED = {'completed', 'succeeded', 'success'}
 FAILED = {'failed', 'cancelled', 'canceled', 'error'}
-PENDING = {'pending', 'queued', 'processing', 'running', 'waiting', 'submitted', 'accepted', 'in_progress'}
+PENDING = {'pending', 'queued', 'queuing', 'processing', 'running', 'waiting', 'submitted', 'accepted', 'in_progress'}
 ERRORS = (OSError, ValueError, KeyError, httpx.HTTPError)
 
 
@@ -240,7 +240,7 @@ class Runner:
         while True:
             if response is None:
                 try:
-                    response = self.request('task-get', {'task_id': state['taskId']}, timeout=min(90, max(1, deadline-self.clock())))
+                    response = self.request('task-get', {'task_id': state['taskId']}, timeout=90 if timeout == 0 else min(90, max(1, deadline-self.clock())))
                 except ERRORS as exc:
                     return self.finish(state, path, 'query_failed', str(exc))
             try:
@@ -289,7 +289,7 @@ class Runner:
         if not state.get('projectId') or not state.get('taskId'):
             return
         failed = state.get('taskStatus') in FAILED
-        queued = state.get('taskStatus') in {'pending', 'queued', 'submitted', 'accepted', ''}
+        queued = state.get('taskStatus') in {'pending', 'queued', 'queuing', 'submitted', 'accepted', ''}
         raw_progress = state.get('progress')
         progress = max(0, min(99, int(raw_progress))) if isinstance(raw_progress, (int, float)) and math.isfinite(raw_progress) else 0
         changes = {'taskId': state['taskId'], 'status': 'failed' if failed else 'running',

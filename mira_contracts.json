@@ -1298,6 +1298,13 @@
             "type": "string",
             "description": "模型 ID，model-list 查询当前可用值"
           },
+          "prompt": {
+            "default": "",
+            "maxLength": 100000,
+            "title": "Prompt",
+            "type": "string",
+            "description": "生成提示词"
+          },
           "resolution": {
             "default": "720p",
             "maxLength": 50,

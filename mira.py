@@ -144,7 +144,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.4.0')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.5.0')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -192,6 +192,21 @@ def main():
     model_info.add_argument('--kind', choices=['image', 'video', 'text', 'audio'])
     model_info.add_argument('--fields', help='逗号分隔的输出字段路径')
     model_info.add_argument('--save-response', type=Path, help='保存完整服务响应，不覆盖已有文件')
+    catalog_commands = {
+        'node-list': '离线列出前端可见的基础节点与用途',
+        'node-info': '离线查询节点输入输出、参数映射、运行方式与示例',
+        'workflow-list': '离线列出常见创作流程',
+        'workflow-info': '离线查询创作步骤、所需命令与能力边界',
+    }
+    for name, description in catalog_commands.items():
+        command = commands.add_parser(name, help=description, description=description)
+        if name == 'node-info':
+            command.add_argument('--node', required=True, help='node-list 中的节点 ID')
+            command.add_argument('--example', action='store_true', help='只输出创建节点的 canvas-apply 示例；不会提交')
+        if name == 'workflow-info':
+            command.add_argument('--workflow', required=True, help='workflow-list 中的流程 ID')
+        command.add_argument('--fields', help='只输出指定字段，逗号分隔')
+        command.add_argument('--save-response', type=Path, help='保存查询结果，不覆盖已有文件')
     commands.add_parser('auth-save', help='在系统凭据库保存令牌')
     commands.add_parser('auth-clear', help='移除本机保存的令牌')
     options = parser.parse_args()
@@ -199,6 +214,23 @@ def main():
                 any(getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id')))
     workflow_exit = 0
     try:
+        if options.operation in catalog_commands:
+            if __package__:
+                from . import mira_cli_catalog as catalog
+            else:
+                import mira_cli_catalog as catalog
+            result = catalog.query(options.operation, getattr(options, 'node', None) or getattr(options, 'workflow', None),
+                                   example=getattr(options, 'example', False))
+            # Local guidance never touches credentials, network, canvas or task APIs.
+            if options.fields:
+                result = cli.select_fields(result, options.fields)
+            if options.save_response:
+                with options.save_response.expanduser().open('x', encoding='utf-8') as stream:
+                    json.dump(result, stream, ensure_ascii=False, indent=2)
+                    stream.write('\n')
+                result = {'savedResponse': str(options.save_response.expanduser().resolve())}
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
         if managed:
             jobs.validate_options(options)
         if options.operation in {'auth-save', 'auth-clear'}:

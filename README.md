@@ -1,6 +1,6 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.4.0**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.5.0**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
@@ -132,3 +132,10 @@ macOS 可用 `shasum -a 256 mira-cli.zip`，Linux 可用 `sha256sum mira-cli.zip
 - 更新：下载最新压缩包，替换整个包并重新安装其中的依赖（v0.2.0 新增 jsonschema）；不要只替换 mira.py。保存在系统凭据库的令牌按站点地址复用。
 
 当前提供 Python 脚本包，尚无免安装的独立可执行文件。
+
+
+## AI 节点目录与流程（v0.5.0）
+
+先用 `node-list`、`workflow-list` 选择节点与流程，再用 `node-info --node video` 或 `workflow-info --workflow nature-video` 按需查询。目录仅覆盖前端可见基础节点；支持字段筛选、创建节点示例与保存结果，不联网、不要求令牌、不提交生成。详见 [节点与流程指南](NODE_GUIDE.md)。
+
+此版本也兼容视频服务的 queuing 排队状态，并让 --timeout 0 的单次状态检查保留正常网络响应等待时间。

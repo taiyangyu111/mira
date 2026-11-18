@@ -62,6 +62,8 @@ python mira.py production-resume --file film.json --stage videos --timeout 600
 
 ## 5. 中断、冲突与交付
 
+`production-run` 在提交下一镜时同时跟踪已提交任务，查询到成功结果立即回填该镜节点。无需等整批提交结束才开始跟踪。全部提交后默认继续等待最多600秒；`--timeout` 调整这段等待，`--timeout 0` 仅跳过提交结束后的等待，提交期间仍会跟踪。`--workers` 默认3，仅控制查询和回填并发；`--poll-interval` 默认5秒。等待超时保留原任务记录，退出码3，用 `production-resume` 接续，不重新生成。画布页面仍按现有同步和素材加载机制显示结果。
+
 ```powershell
 python mira.py production-status --file film.json
 python mira.py production-resume --file film.json --stage images --timeout 600
@@ -70,9 +72,10 @@ python mira.py production-resume --file film.json --stage videos --timeout 600
 
 - `production-resume` 只接续已有任务，不启动未提交步骤。`production-run` 才能提交新的付费任务。
 - 重复 run 会跳过已有任务记录；同阶段尚未提交的镜头，仍需要有效报价和费用授权。未知提交结果必须先核对服务端，不能删除记录后重试。
-- 回填失败仍复用已有结果；用户改变了目标节点时沿用单任务冲突保护，不覆盖用户修改。报价后修改目标配置或布局也会阻止新生成，需要重新整理计划。
+- 回填失败仍复用已有结果；修改提示词、模型、任务或素材时沿用冲突保护，不覆盖用户修改。v0.9.3 新计划和回执允许调整位置、宽高；旧记录仍保留原指纹校验。回填后核验当前节点，用户撤销结果不会被误报为回填成功。
+- 临时查询/回填错误按任务独立退避重试，等待预算用尽后保留记录；不会重试付费生成。Ctrl+C 停止后续提交，`production-run` 退出码为130，已经提交的任务不取消。
 - 创建新的计划也不会自动重复已有节点上的任务：任务 ID/现有素材会被识别。不要通过清空节点的任务信息绕过防重逻辑。
-- 执行记录放在计划目录的 `.mira/productions/<计划ID>/`。计划与此目录须一同保留，不能只移动 film.json。文件锁阻止两个 CLI 同时执行同一计划。
+- 执行记录放在计划目录的 `.mira/productions/<计划ID>/`。计划与此目录须一同保留，不能只移动 film.json。文件锁阻止两个 CLI 同时执行同一计划；`production-status` 可在执行期间读取进度。
 - 每镜状态返回 taskId 和 runFile，可直接使用 `task-download` 下载，再使用 `media-inspect` 验收实际规格。当前不会自动拼接或交付整部影片。
 - 终端关闭后不继续在后台执行；重新打开后接续原计划即可。
 

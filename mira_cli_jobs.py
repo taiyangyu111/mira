@@ -4,6 +4,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import sys
 import tempfile
@@ -18,6 +19,24 @@ SUCCEEDED = {'completed', 'succeeded', 'success'}
 FAILED = {'failed', 'cancelled', 'canceled', 'error'}
 PENDING = {'pending', 'queued', 'queuing', 'processing', 'running', 'waiting', 'submitted', 'accepted', 'in_progress'}
 ERRORS = (OSError, ValueError, KeyError, httpx.HTTPError)
+
+
+def retryable_error(exc):
+    """Only reads/attachments may use this classification, never paid submission."""
+    if isinstance(exc, httpx.TransportError):
+        return True
+    status = getattr(exc, 'status_code', None)
+    if status is None:  # Compatibility with older HTTP adapters and receipts.
+        match = re.match(r'Mira HTTP (\d{3}) ', str(exc))
+        status = int(match[1]) if match else None
+    return status in {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def read_json(path, encoding='utf-8-sig'):
+    """Coordinate short reads with atomic replacement, including across processes."""
+    path = Path(path)
+    with locked(path.with_suffix(path.suffix + '.io'), timeout=5):
+        return json.loads(path.read_text(encoding=encoding))
 
 
 def validate_options(options):
@@ -37,7 +56,7 @@ def validate_options(options):
 
 
 @contextmanager
-def locked(path):
+def locked(path, timeout=0):
     """A separate persistent lock file avoids inode replacement races."""
     path.parent.mkdir(parents=True, exist_ok=True)
     stream = path.with_suffix(path.suffix + '.lock').open('a+b')
@@ -47,16 +66,21 @@ def locked(path):
             stream.write(b'0')
             stream.flush()
         stream.seek(0)
-        try:
-            if os.name == 'nt':
-                import msvcrt
-                msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-            else:
-                import fcntl
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-            acquired = True
-        except OSError:
-            raise ValueError('此任务记录正在被另一个 CLI 使用，请等待该进程结束') from None
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if os.name == 'nt':
+                    import msvcrt
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise ValueError('此任务记录正在被另一个 CLI 使用，请等待该进程结束') from None
+                time.sleep(.01)
         yield
     finally:
         if acquired:
@@ -71,6 +95,12 @@ def locked(path):
 
 
 def save(path, state):
+    path = Path(path)
+    with locked(path.with_suffix(path.suffix + '.io'), timeout=5):
+        _save_atomic(path, state)
+
+
+def _save_atomic(path, state):
     name = None
     try:
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, prefix=path.name + '.', suffix='.tmp', delete=False) as stream:
@@ -79,7 +109,15 @@ def save(path, state):
             stream.write('\n')
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(name, path)
+        deadline = time.monotonic() + 1.5
+        while True:
+            try:
+                os.replace(name, path)
+                break
+            except PermissionError as exc:
+                if os.name != 'nt' or exc.winerror not in {5, 32, 33} or time.monotonic() >= deadline:
+                    raise
+                time.sleep(.025)
     finally:
         if name and Path(name).exists():
             Path(name).unlink()
@@ -110,14 +148,38 @@ def canonical_numbers(value):
     return value
 
 
-def fingerprint(node, ignore_runtime=False, normalize_numbers=False):
+def fingerprint(node, ignore_runtime=False, normalize_numbers=False, ignore_geometry=False, ignore_registration=False):
     value = normalized(node)
     if normalize_numbers:
         value = canonical_numbers(value)
+    if ignore_geometry:
+        for key in ('x', 'y', 'width', 'height'):
+            value.pop(key, None)
     if ignore_runtime and isinstance(value.get('metadata'), dict):
         for key in ('taskId', 'status', 'taskStatus', 'progress', 'errorMessage', 'imageGenerationStage',
                     'canvasPreparation', 'canUseForGeneration', 'updatedAt', 'cliSubmissionId'):
             value['metadata'].pop(key, None)
+    if ignore_registration and isinstance(value.get('metadata'), dict):
+        metadata = value['metadata']
+        # The editor records measured media dimensions and normalizes card size
+        # after loading a file. These are not generation size/duration settings.
+        for key in ('mediaWidth', 'mediaHeight', 'mediaBaseSizeVersion'):
+            metadata.pop(key, None)
+        if any(metadata.get(key) for key in ('src', 'resultUrl', 'resultUrls')):
+            for key in ('mediaDuration', 'durationSeconds'):
+                metadata.pop(key, None)
+        # Registration rewrites references in-place during any canvas save.
+        # IDs remain significant when they are the only identity of a material.
+        for descriptor in [metadata, *(metadata.get('references') or [])]:
+            if not isinstance(descriptor, dict):
+                continue
+            for key in ('canvasPreparation', 'canUseForGeneration'):
+                descriptor.pop(key, None)
+            if any(descriptor.get(key) for key in ('src', 'url', 'resultUrl', 'resultUrls', 'referenceUrl', 'fileKey', 'storageKey')):
+                descriptor.pop('materialId', None)
+                if descriptor is not metadata:
+                    descriptor.pop('id', None)
+                    descriptor.pop('source', None)
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(',', ':')).encode()).hexdigest()
 
 
@@ -175,7 +237,7 @@ class Runner:
         return self.call(operation, arguments, base=self.base, request_timeout=timeout)
 
     def report(self, state, path):
-        keys = ('phase', 'generation', 'attachment', 'taskId', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'operationId', 'statusSyncError')
+        keys = ('phase', 'generation', 'attachment', 'taskId', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'operationId', 'statusSyncError', 'retryable', 'claimReleaseError')
         result = {k: state.get(k) for k in keys}
         result.update(runFile=str(path), origin=self.base, resume=['task-resume', '--run-file', str(path)])
         result['exitCode'] = 0 if state['phase'] in {'submitted', 'completed', 'attached'} else (3 if state['phase'] in {'wait_timeout', 'interrupted'} else 4)
@@ -199,8 +261,8 @@ class Runner:
                                       'warning': '任务状态写盘失败，请保留这条回执；不要重新提交生成。'}, ensure_ascii=False))
             raise ValueError('任务记录保存失败：' + str(exc)) from exc
 
-    def finish(self, state, path, phase, error=None):
-        state.update(phase=phase, error=error)
+    def finish(self, state, path, phase, error=None, retryable=False):
+        state.update(phase=phase, error=error, retryable=retryable)
         self.persist(state, path)
         return self.report(state, path)
 
@@ -220,8 +282,13 @@ class Runner:
                     raise ValueError('目标节点已有未结束任务，请使用 task-wait/task-resume 接续；未重复生成')
             elif metadata.get('cliSubmissionId') or str(metadata.get('taskStatus') or metadata.get('status') or '').lower() in PENDING | {'submitting'}:
                 raise ValueError('目标节点已被其他提交占用或提交结果待确认，请核对原任务记录；未重复生成')
-            if fingerprint(node, ignore_runtime=True, normalize_numbers=True) != state['targetFingerprint']:
+            if fingerprint(node, ignore_runtime=True, normalize_numbers=True,
+                           ignore_geometry=state.get('fingerprintVersion') in (4, 5),
+                           ignore_registration=state.get('fingerprintVersion') == 5) != state['targetFingerprint']:
                 raise ValueError('提交前节点已修改，未提交生成')
+            state['claimPreviousRuntime'] = {key: metadata[key] for key in (
+                'taskId', 'status', 'taskStatus', 'progress', 'errorMessage', 'imageGenerationStage', 'cliSubmissionId') if key in metadata}
+            self.persist(state, path)
             metadata.pop('taskId', None)
             metadata.update(cliSubmissionId=claim, status='running', taskStatus='submitting', progress=0,
                             errorMessage='', imageGenerationStage='正在提交')
@@ -235,6 +302,33 @@ class Runner:
                     raise
                 # A lost acknowledgement may already have saved our claim.
         raise ValueError('无法确认目标节点占用，未提交生成')
+
+    def release_unsubmitted_claim(self, state, path):
+        """Release only our own claim with durable proof generation never began."""
+        if state.get('generation') != 'not_submitted' or not state.get('submissionId'):
+            return
+        for attempt in range(3):
+            try:
+                canvas = self.request('canvas-get', {'project_id': state['projectId']}, timeout=15)
+                node, version = target_node(canvas, state['nodeId'], state['kind'])
+                metadata = dict(node.get('metadata') or {})
+                if metadata.get('cliSubmissionId') != state['submissionId']:
+                    state['claimReleaseError'] = None
+                    return
+                if metadata.get('taskId'):
+                    raise ValueError('节点已有任务，不能自动释放占用')
+                for key in ('taskId', 'status', 'taskStatus', 'progress', 'errorMessage', 'imageGenerationStage', 'cliSubmissionId'):
+                    metadata.pop(key, None)
+                metadata.update(state.get('claimPreviousRuntime') or {})
+                self.request('canvas-apply', {'project_id': state['projectId'], 'baseVersion': version,
+                    'operationId': 'cli-release-' + state['submissionId'], 'actions': [{'type': 'update_node', 'payload': {
+                        'nodeId': state['nodeId'], 'changes': {'metadata': metadata}}}]}, timeout=15)
+                state['claimReleaseError'] = None
+                return
+            except ERRORS as exc:
+                state['claimReleaseError'] = str(exc)
+                if not retryable_error(exc) or attempt == 2:
+                    return
 
     def start(self, operation, arguments, *, path=None, project_id=None, node_id=None, timeout=600, poll_interval=5, task_id=None, wait=True):
         path = (Path(path) if path else Path.cwd()/'.mira/runs'/f'{uuid4()}.json').expanduser().resolve()
@@ -252,9 +346,9 @@ class Runner:
                     canvas = self.request('canvas-get', {'project_id': project_id})
                     node, _ = target_node(canvas, node_id, state['kind'])
                     state['kind'] = node['type']
-                    state['fingerprintVersion'] = 3
+                    state['fingerprintVersion'] = 5
                     state['originalTaskId'] = (node.get('metadata') or {}).get('taskId')
-                    state['targetFingerprint'] = fingerprint(node, ignore_runtime=True, normalize_numbers=True)
+                    state['targetFingerprint'] = fingerprint(node, ignore_runtime=True, normalize_numbers=True, ignore_geometry=True, ignore_registration=True)
                     self.persist(state, path)
                 if task_id:
                     return self.wait(state, path, timeout, poll_interval)
@@ -282,8 +376,10 @@ class Runner:
                     return {**response, **receipt}
                 return self.wait(state, path, timeout, poll_interval, initial=response)
             except KeyboardInterrupt:
+                self.release_unsubmitted_claim(state, path)
                 return self.finish(state, path, 'interrupted', '已停止等待；未取消服务端任务。')
             except ERRORS as exc:
+                self.release_unsubmitted_claim(state, path)
                 phase = ('preflight_failed' if state['generation'] == 'not_submitted' else
                          'submission_unknown' if state['generation'] == 'unknown' and not state.get('taskId') else 'query_failed')
                 return self.finish(state, path, phase, str(exc))
@@ -293,12 +389,15 @@ class Runner:
         if not path.is_file():
             raise ValueError('任务记录不存在')
         with locked(path):
-            state = json.loads(path.read_text(encoding='utf-8'))
+            state = read_json(path)
             if not isinstance(state, dict) or state.get('schemaVersion') != 1:
                 raise ValueError('不支持的任务记录格式')
             if state.get('origin') != self.base:
                 raise ValueError('MIRA_URL 与任务记录的站点不同，请切回原站点后接续')
             if not state.get('taskId'):
+                if state.get('generation') == 'not_submitted':
+                    self.release_unsubmitted_claim(state, path)
+                    return self.finish(state, path, 'preflight_failed', '确认未提交生成；已尝试释放本次占用，请核对 claimReleaseError 后使用新记录启动。')
                 return self.finish(state, path, 'submission_unknown', '记录中没有任务 ID，不能自动接续或重新生成。请在服务端核对后使用 task-wait --task-id。')
             try:
                 # Always refresh authoritative status; never reuse a stale result URL.
@@ -309,12 +408,19 @@ class Runner:
     def wait(self, state, path, timeout, poll_interval, initial=None):
         deadline = self.clock() + timeout
         response = initial
+        failures = 0
         while True:
             if response is None:
                 try:
                     response = self.request('task-get', {'task_id': state['taskId']}, timeout=90 if timeout == 0 else min(90, max(1, deadline-self.clock())))
                 except ERRORS as exc:
-                    return self.finish(state, path, 'query_failed', str(exc))
+                    transient = retryable_error(exc)
+                    if transient and self.clock() < deadline:
+                        failures += 1
+                        self.finish(state, path, 'query_failed', str(exc), retryable=True)
+                        self.sleep(min(poll_interval * 2**min(failures-1, 4), 30, deadline-self.clock()))
+                        continue
+                    return self.finish(state, path, 'query_failed', str(exc), retryable=transient)
             try:
                 info = public_task(response)
             except ERRORS as exc:
@@ -323,6 +429,8 @@ class Runner:
                 return self.finish(state, path, 'query_failed', '任务响应 ID 不匹配，已停止')
             info.pop('taskId')
             state.update(info)
+            state.update(retryable=False, error=None)
+            failures = 0
             status = state['taskStatus']
             if status in FAILED:
                 state.update(generation='failed', attachment='not_attempted' if state.get('projectId') else 'not_requested')
@@ -332,7 +440,12 @@ class Runner:
                 state['generation'] = 'succeeded'
                 if state.get('resultUrl'):
                     if state.get('projectId'):
-                        return self.attach(state, path)
+                        attached = self.attach(state, path)
+                        if attached.get('retryable') and self.clock() < deadline:
+                            self.sleep(min(poll_interval, deadline-self.clock()))
+                            response = None
+                            continue
+                        return attached
                     return self.finish(state, path, 'completed')
                 state['phase'] = 'waiting_result'
             elif status in PENDING or not status:
@@ -348,15 +461,17 @@ class Runner:
             response = None
 
     def check_target(self, state, node):
-        modern = state.get('fingerprintVersion') in (2, 3)
+        modern = state.get('fingerprintVersion') in (2, 3, 4, 5)
         claim = (node.get('metadata') or {}).get('cliSubmissionId')
         if state.get('submissionId') and claim not in (None, state['submissionId']):
             raise ValueError('目标节点已被另一个提交占用，已停止同步')
         if modern and (node.get('metadata') or {}).get('taskId') not in {state.get('taskId'), state.get('originalTaskId')}:
             raise ValueError('目标节点已关联其他任务，已停止同步，避免覆盖新的生成。')
-        if fingerprint(node, ignore_runtime=modern, normalize_numbers=state.get('fingerprintVersion') == 3) != state.get('targetFingerprint'):
+        if fingerprint(node, ignore_runtime=modern, normalize_numbers=state.get('fingerprintVersion') in (3, 4, 5),
+                       ignore_geometry=state.get('fingerprintVersion') in (4, 5),
+                       ignore_registration=state.get('fingerprintVersion') == 5) != state.get('targetFingerprint'):
             raise ValueError('等待期间目标节点已修改，已停止回填。确认目标后可用 task-wait 显式指定节点重新挂接已有任务。')
-        if state.get('fingerprintVersion') != 3:
+        if state.get('fingerprintVersion') not in (3, 4, 5):
             state.update(fingerprintVersion=3, originalTaskId=(node.get('metadata') or {}).get('taskId'),
                          targetFingerprint=fingerprint(node, ignore_runtime=True, normalize_numbers=True))
 
@@ -455,10 +570,14 @@ class Runner:
                 self.request('canvas-apply', {'project_id': state['projectId'], 'baseVersion': version,
                     'operationId': state['operationId'], 'actions': [{'type': 'update_node', 'payload': {
                         'nodeId': state['nodeId'], 'changes': {'metadata': metadata}}}]})
+                verified = self.request('canvas-get', {'project_id': state['projectId']})
+                actual, _ = target_node(verified, state['nodeId'], state['kind'])
+                if not attached_results(actual.get('metadata') or {}, state):
+                    raise ValueError('回填操作已处理，但当前节点结果不一致；可能已被撤销或修改，请核对后显式挂接，不自动覆盖。')
                 state.update(attachment='succeeded', statusSyncError=None)
                 return self.finish(state, path, 'attached')
             except ERRORS as exc:
                 if 'Mira HTTP 409 ' in str(exc) and attempt < 2:
                     continue
                 state['attachment'] = 'failed'
-                return self.finish(state, path, 'attach_failed', str(exc))
+                return self.finish(state, path, 'attach_failed', str(exc), retryable=retryable_error(exc))

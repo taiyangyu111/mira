@@ -1,4 +1,24 @@
-# CLI 使用说明（v0.9.2）
+# CLI 使用说明（v0.9.5）
+
+## 素材集合与同步修复（v0.9.5）
+
+- 错误输出保留服务端的 `detail`、`message` 或 `error` 原因，包括未归档、素材无权限及校验失败。
+- `asset-search` 返回的是资产集合。先用 `asset-contents` 展开，选择 `assets[].importId` 导入；`person:...` 不能直接作为文件 ID。`scope` 沿用搜索结果。最新服务已关闭旧全局 `shared` 入口，请使用个人库；团队文件通过现有团队入口选用到个人库后，可按文件 ID 导入。导入时重新检查权限，移出团队后不能继续导入该团队来源的文件。
+- 新任务和新制作计划忽略素材自动登记字段的变化；提示词、模型、参考图地址、仅靠 ID 指定的素材及任务占用仍有冲突保护。旧回执沿用原校验规则；旧记录若仍误报，核对节点后用 `task-wait --task-id <已有任务ID> --project-id <画布ID> --node-id <节点ID> --run-file <新回执.json>` 挂回已有结果，不重新生成。
+- 画布列表在页面前台时每 5 秒静默刷新已加载内容，保留搜索和目录。页面隐藏或离开列表时暂停后台读取；短暂断网保留原卡片。
+
+```powershell
+python mira.py asset-search --json '{"category":"portrait","scope":"personal"}'
+python mira.py asset-contents --json '{"item_id":"person:<搜索返回的ID>","scope":"personal"}'
+python mira.py asset-import --json '{"asset_id":"<assets 中选定文件的 importId>"}'
+```
+
+## 中断与恢复（v0.9.3）
+
+- 批量执行边提交边跟踪，每个任务独立查询；短暂超时、限流和服务端临时错误在等待预算内退避重试，只查询或回填，不重发生成。权限错误、真实生成失败、用户内容冲突仍需处理。
+- `production-run` 收到 Ctrl+C 后停止后续提交，返回退出码 130；已提交的服务器任务不取消。使用原计划接续。运行期间可用 `production-status` 只读查询进度。
+- Windows 回执读取允许原子替换，短暂文件占用会有界重试。新计划和新任务记录允许移动、缩放节点；修改提示词、模型、任务或素材仍触发冲突保护。旧记录保留原指纹校验。
+- 回填后核对当前节点结果，幂等响应不会直接被视为成功。确定未提交生成时清理本次节点占用；清理暂时失败可用原记录 `task-resume` 再尝试，提交结果未知时绝不自动解锁或重新生成。
 
 ## 生成与批次可靠性（v0.9.2）
 
@@ -28,7 +48,7 @@ python mira.py account
 
 ## 从分镜到批量执行
 
-`production-create` 从已应用的布局文件整理每镜参数；`production-preflight` 整批校验并报价；`production-run` 在费用授权后分阶段提交；`production-select` 记录审图选择；`production-resume` 只接续已有任务。`production-status` 查询进度。完整示例及费用控制见 [执行计划指南](EXECUTION_GUIDE.md)。
+`production-create` 从已应用的布局文件整理每镜参数；`production-preflight` 整批校验并报价；`production-run` 在费用授权后边提交、边跟踪并回填，全部提交后默认继续等待最多600秒；`production-select` 记录审图选择；`production-resume` 接续超时或中断的已有任务。`production-status` 查询进度。完整示例及费用控制见 [执行计划指南](EXECUTION_GUIDE.md)。
 
 ## 模型规则、批次与验收
 
@@ -222,3 +242,32 @@ CLI 进程关闭后不会继续写进度；网页如果正在查询已关联任�
 ## 节点目录与流程查询（v0.5.2）
 
 新增离线命令 node-list、node-info --node image、workflow-list、workflow-info --workflow nature-video。先选合适的可见节点，再读取输入输出与参数映射；这些查询无需令牌、不联网、不提交生成。node-info --example 可输出创建节点的 JSON 示例，支持 --fields 与 --save-response。详见 [节点与流程指南](NODE_GUIDE.md)。目录明确标出外部剪辑边界，不解锁前端隐藏工具。
+
+
+## 节点下载、图片 ZIP 与音频裁剪（v0.9.4）
+
+仅覆盖当前画布开放的媒体操作，不新增隐藏工具。需要配套更新服务端；旧服务端没有节点下载路由。
+
+```powershell
+# 按任务下载；支持本地归档与 Mira 对象存储，不依赖旧签名 URL
+python mira.py task-download --json '{"task_id":"任务UUID","output":"./result.mp4"}'
+# 下载节点当前展示结果（图片、视频、音频）；result_index 可选，从 0 开始
+python mira.py node-download --json '{"project_id":"画布UUID","node_id":"image-1","output":"./result.png"}'
+python mira.py node-download --schema
+python mira.py node-download --example
+# 两张图片打包，也可用 --group-id 分组ID 或 --all-images
+python mira.py images-download --project-id 画布UUID --node-id image-1 --node-id image-2 --output ./images.zip
+# 多结果图片节点可加 --all-results；默认只下载当前展示的那张
+python mira.py images-download --project-id 画布UUID --group-id 分组ID --all-results --output ./group.zip
+# 先试听：只下载和本机裁剪，不上传、不修改画布
+python mira.py audio-trim --project-id 画布UUID --node-id audio-1 --start 0.5 --end 4.5 --run-file ./trim.json --preview-only
+# 去掉 --preview-only：上传裁剪结果，在右侧创建音频节点并连回原节点
+python mira.py audio-trim --project-id 画布UUID --node-id audio-1 --start 0.5 --end 4.5 --run-file ./trim.json
+```
+
+- 所有下载都不覆盖已有文件。单文件最多 512 MB；网络错误、中断会删除本次未完成文件。节点下载须有可访问的 Mira 归档、已上传参考素材或有权限的素材记录；外部链接、blob/IndexedDB 临时素材须先上传。
+- ZIP 一次最多 100 张图片，使用编号防止同名覆盖，并含 manifest.json（节点、结果序号、文件名、字节数、SHA-256）。任意图片失败时退出码 4，返回失败节点，不保存残缺 ZIP。
+- 音频裁剪必填 project-id、node-id、start、end、run-file。时间单位为秒，起点非负，终点不能超过源时长，至少保留 0.05 秒。需要 PATH 中可调用 ffmpeg 和 ffprobe。
+- run-file 必须为 .json，试听文件为同目录同名 .wav。原音频保持不变。发布 WAV 受当前画布 15 MB 音频上传限制，超限仍保留本机试听文件。
+- 使用相同站点、节点、区间和 run-file 接续，上传成功后只重试回填；已完成时返回原结果节点，不重复创建。画布 409 冲突会重读版本；源音频更换后停止，避免处理过期素材。
+- 下载和试听需要读取权限；上传、回填还需编辑权限。本流程不提交图片、视频或音频生成，不需要 --confirm-spend。

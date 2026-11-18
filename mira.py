@@ -23,11 +23,13 @@ OPERATIONS = {
     'canvas-create': ('POST', CANVAS + '/canvases', '创建画布'),
     'canvas-apply': ('POST', CANVAS + '/canvases/{project_id}/actions', '按 baseVersion 和 operationId 批量编辑画布'),
     'asset-search': ('GET', '/api/asset-library/items', '按 Mira 资产分类和关键词搜索'),
+    'asset-contents': ('GET', '/api/asset-library/items/{item_id}/assets', '展开资产集合，取得可导入的具体文件 importId'),
     'asset-import': ('POST', CANVAS + '/mira/assets/{asset_id}/import', '将已有 Mira 资产导入画布素材'),
     'asset-upload': ('POST', CANVAS + '/media/references', '上传图片、视频或音频参考素材'),
     'model-list': ('GET', CANVAS + '/ai/config', '读取 Mira 画布模型配置'),
     'generation-quote': ('POST', CANVAS + '/ai/generation/quote', '查询图片或视频估价及是否可用'),
     'task-get': ('GET', CANVAS + '/ai/tasks/{task_id}', '查询自己的画布任务状态与结果'),
+    'node-download': ('GET', CANVAS + '/canvases/{project_id}/nodes/{node_id}/download', '下载当前媒体节点，可指定结果序号'),
     'task-download': ('GET', CANVAS + '/ai/tasks/{task_id}/download', '下载已归档的任务结果到 output'),
     'material-list': ('GET', CANVAS + '/materials/canvas-library', '查询画布素材及服务端审核状态'),
     'material-get': ('GET', CANVAS + '/materials/{material_id}', '读取当前账号可查看的素材'),
@@ -46,6 +48,12 @@ GENERATION_OPERATIONS = {
 OPERATIONS.update({name: ('POST', CANVAS + '/ai' + path, description)
                    for name, (path, description) in GENERATION_OPERATIONS.items()})
 KEYRING_SERVICE = 'Mira Plugin'
+
+
+class MiraHTTPError(ValueError):
+    def __init__(self, status_code, detail):
+        self.status_code = status_code
+        super().__init__(f'Mira HTTP {status_code} {detail}')
 
 
 def origin(value=None):
@@ -69,12 +77,27 @@ def saved_token(base):
     return keyring.get_password(KEYRING_SERVICE, base)
 
 
+def response_error(response):
+    """Accept both the host and canvas error envelopes without losing reasons."""
+    try:
+        body = response.json()
+    except ValueError:
+        return '服务返回了非 JSON 响应'
+    if isinstance(body, dict):
+        body = next((body[key] for key in ('detail', 'message', 'error') if body.get(key)), None)
+    if not body:
+        return '服务未提供具体错误原因'
+    return (body if isinstance(body, str) else json.dumps(body, ensure_ascii=False))[:4000]
+
+
 def call(operation, arguments=None, *, token=None, base=None, upload_root=None, request_timeout=90):
     method, path, _ = OPERATIONS[operation]
     arguments = dict(arguments or {})
+    if operation == 'asset-import' and str(arguments.get('asset_id', '')).startswith('person:'):
+        raise ValueError('这是人物集合 ID；请先运行 asset-contents，选择返回的 importId 再 asset-import')
     if operation == 'canvas-create' and (not isinstance(arguments.get('title'), str) or not arguments['title'].strip()):
         raise ValueError('创建画布必须填写名称，请根据创作内容填写非空 title')
-    for key in ('project_id', 'asset_id', 'task_id', 'material_id'):
+    for key in ('project_id', 'asset_id', 'item_id', 'task_id', 'material_id', 'node_id'):
         placeholder = '{' + key + '}'
         if placeholder in path:
             identifier = str(arguments.pop(key))
@@ -101,36 +124,40 @@ def call(operation, arguments=None, *, token=None, base=None, upload_root=None, 
                 raise ValueError('仅允许上传图片、视频或音频')
             with file.open('rb') as stream:
                 response = client.post(path, files={'file': (file.name, stream, mime)}, data=arguments)
-        elif operation == 'task-download':
+        elif operation in {'task-download', 'node-download'}:
             destination = Path(arguments.pop('output')).expanduser()
             if destination.exists():
                 raise ValueError('下载目标已存在，请选择新文件')
-            with client.stream('GET',path) as response:
+            with client.stream('GET', path, params=arguments) as response:
                 if response.is_success:
                     created = False
                     try:
                         with destination.open('xb') as stream:
                             created = True
+                            total = 0
                             for chunk in response.iter_bytes():
+                                total += len(chunk)
+                                if total > 512 * 1024**2:
+                                    raise ValueError('媒体文件超过 512 MB 下载限制')
                                 stream.write(chunk)
-                    except (OSError, httpx.HTTPError):
+                    except BaseException:
                         if created:
                             destination.unlink(missing_ok=True)
                         raise
-                    return {'output':str(destination.resolve())}
+                    from email.message import Message
+                    from urllib.parse import unquote
+                    message = Message()
+                    message['Content-Disposition'] = response.headers.get('content-disposition', '')
+                    filename = message.get_filename() or destination.name
+                    return {'output': str(destination.resolve()), 'filename': Path(unquote(filename)).name,
+                            'bytes': destination.stat().st_size, 'contentType': response.headers.get('content-type')}
                 response.read()
         elif method == 'GET':
             response = client.get(path, params=arguments)
         else:
             response = client.post(path, json=arguments)
         if not response.is_success:
-            try:
-                error = response.json().get('detail', '')
-                if not isinstance(error, str):
-                    error = json.dumps(error, ensure_ascii=False)
-            except (ValueError, AttributeError):
-                error = '服务返回了非 JSON 响应'
-            raise ValueError(f'Mira HTTP {response.status_code} {error}')
+            raise MiraHTTPError(response.status_code, response_error(response))
         return response.json()
 
 
@@ -146,7 +173,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.9.2')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.9.5')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -278,6 +305,9 @@ def main():
         if name in ('production-run', 'production-resume'):
             command.add_argument('--stage', choices=['images', 'videos'], required=True)
         if name == 'production-run':
+            command.add_argument('--timeout', type=float, default=600, help='提交过程中持续跟踪；全部提交后最多继续等待的秒数，默认600；0仅跳过最后等待')
+            command.add_argument('--workers', type=int, default=3, help='并行查询和回填数量，不增加生成提交次数')
+            command.add_argument('--poll-interval', type=float, default=5, help='跟踪查询间隔秒数，默认5')
             command.add_argument('--quote-id', required=True, help='已审阅的预检报价ID')
             command.add_argument('--max-points', required=True, help='本阶段待提交任务的报价总额上限，不是实际结算硬上限')
             command.add_argument('--confirm-spend', action='store_true', help='确认提交生成并可能扣费')
@@ -296,12 +326,21 @@ def main():
     login_command.add_argument('--no-browser', action='store_true', help='只显示授权链接，不自动打开浏览器')
     login_command.add_argument('--timeout', type=float, default=300, help='等待授权的秒数，最多 300 秒')
     commands.add_parser('auth-clear', help='移除本机保存的令牌')
+    if __package__:
+        from . import mira_cli_downloads as downloads
+    else:
+        import mira_cli_downloads as downloads
+    downloads.register(commands)
     options = parser.parse_args()
     managed = options.operation in {'task-wait', 'task-resume'} or options.operation in jobs.MEDIA_OPERATIONS
     wait_requested = options.operation in {'task-wait', 'task-resume'} or any(
         getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id'))
     workflow_exit = 0
     try:
+        if options.operation in {'images-download', 'audio-trim'}:
+            result = downloads.execute(options, origin(), call)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return result.get('exitCode', 0)
         if options.operation in {'generation-check', 'batch-create', 'batch-status', 'batch-resume', 'media-inspect'} or options.operation in production_commands:
             if __package__:
                 from . import mira_cli_capabilities as capabilities, mira_cli_batch as batch, mira_cli_media as media_cli
@@ -508,6 +547,8 @@ def main():
                 result = cli.output_view(options.operation, result, summary=getattr(options, 'summary', False),
                                          node_id=getattr(options, 'node_id', None), kind=getattr(options, 'kind', None),
                                          model=getattr(options, 'model', None), fields=options.fields)
+    except KeyboardInterrupt:
+        parser.exit(130, '已中断；已提交的服务端任务未取消，请使用原任务记录接续。\n')
     except (OSError, ValueError, KeyError, httpx.HTTPError) as exc:
         parser.exit(1, f'{exc}\n')
     print(json.dumps(result, ensure_ascii=False, indent=2))

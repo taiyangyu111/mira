@@ -1,6 +1,6 @@
 """Group and resume existing task receipts. No generation submission path."""
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 import json
 import math
 from pathlib import Path
@@ -16,7 +16,7 @@ PENDING = {'waiting', 'waiting_result', 'wait_timeout', 'interrupted', 'prepared
 
 
 def read_receipt(path, base):
-    data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+    data = jobs.read_json(path)
     if not isinstance(data, dict) or data.get('schemaVersion') != 1:
         raise ValueError('不支持的任务记录格式')
     if data.get('origin') != base:
@@ -26,7 +26,7 @@ def read_receipt(path, base):
 
 def load(path, base):
     path = Path(path).expanduser().resolve()
-    data = json.loads(path.read_text(encoding='utf-8-sig'))
+    data = jobs.read_json(path)
     if not isinstance(data, dict) or data.get('format') != 'mira-task-batch-v1' or data.get('origin') != base:
         raise ValueError('批次格式或站点不匹配')
     files = data.get('runFiles')
@@ -71,7 +71,7 @@ def row(path, state):
     else:
         status = 'running'
     return {'runFile': str(path), 'status': status, **{k: state.get(k) for k in (
-        'taskId', 'phase', 'generation', 'attachment', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error')}}
+        'taskId', 'phase', 'generation', 'attachment', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'retryable')}}
 
 
 def error_row(path, exc):
@@ -166,11 +166,29 @@ def resume(path, base, call, *, timeout=0, poll_interval=5, workers=3, attachmen
         except jobs.ERRORS as exc:
             return error_row(receipt, exc)
 
-    while True:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            rows = list(pool.map(advance, paths))
-        result = summarize(data, paths, rows, refreshed=True)
-        result['attachmentsOnly'] = attachments_only
-        if timeout == 0 or attachments_only or clock() >= deadline or not any(r['status'] == 'running' for r in rows):
-            return result
-        sleep(min(poll_interval, max(0, deadline - clock())))
+    due = {p: clock() for p in paths}
+    active = {}; rows_by_path = {}; failures = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        while due or active:
+            for receipt in sorted(due, key=due.get):
+                if len(active) >= workers or due[receipt] > clock():
+                    break
+                active[pool.submit(advance, receipt)] = receipt
+                del due[receipt]
+            if active:
+                ready, _ = wait(active, timeout=.05, return_when=FIRST_COMPLETED)
+                for future in ready:
+                    receipt = active.pop(future)
+                    item = rows_by_path[receipt] = future.result()
+                    if timeout > 0 and not attachments_only and clock() < deadline and (item['status'] == 'running' or item.get('retryable')):
+                        failures[receipt] = failures.get(receipt, 0) + 1 if item.get('retryable') else 0
+                        due[receipt] = clock() + min(30, poll_interval * 2**min(max(0, failures[receipt]-1), 4))
+            elif due:
+                sleep(min(max(0, min(due.values())-clock()), max(0, deadline-clock())) if timeout else 0)
+            if timeout > 0 and clock() >= deadline:
+                # Gather already running requests, but do not launch another round.
+                due.clear()
+    rows = [rows_by_path.get(p) or error_row(p, '等待时间已到，尚未查询；请接续原批次') for p in paths]
+    result = summarize(data, paths, rows, refreshed=True)
+    result['attachmentsOnly'] = attachments_only
+    return result

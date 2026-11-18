@@ -7,6 +7,9 @@ import json
 import math
 from pathlib import Path
 from uuid import UUID, uuid4
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
 
 if __package__:
     from . import mira_cli_jobs as jobs, mira_cli_storyboard as layout
@@ -45,7 +48,7 @@ def run_path(path, plan, shot, kind):
 
 
 def load(path, base):
-    data = json.loads(path.read_text(encoding='utf-8-sig'))
+    data = jobs.read_json(path)
     if not isinstance(data, dict) or data.get('format') != FORMAT or data.get('origin') != base:
         raise ValueError('执行计划格式或站点不匹配')
     UUID(data['id']); UUID(data['projectId'])
@@ -159,8 +162,8 @@ def create(layout_file, out, base, call, image_model=None, video_model=None, ima
                         'aspectRatio': m.get('videoAspectRatio', '16:9'), 'fps': numeric_setting(m.get('videoFps', 24)),
                         'generateAudio': m.get('videoGenAudio', m.get('generateAudio', False)),
                         'autoDuration': False, 'outputFormat': 'mp4'}
-            shot[kind] = {'nodeId': node['id'], 'arguments': args, 'fingerprintVersion': 3,
-                          'targetFingerprint': jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=True),
+            shot[kind] = {'nodeId': node['id'], 'arguments': args, 'fingerprintVersion': 5,
+                          'targetFingerprint': jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=True, ignore_geometry=True, ignore_registration=True),
                           'initialState': availability(node), 'existingTaskId': m.get('taskId')}
         result['shots'].append(shot)
     # Creation never changes a canvas or submits a task.
@@ -236,7 +239,7 @@ def analyze(path, plan, call):
                         row['errors'].append('已有任务需要处理，请接续或核对，不会重新生成')
                     continue
                 node = node_from(canvas, step['nodeId'], kind)
-                if availability(node) != 'new' or jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=step.get('fingerprintVersion') == 3) != step['targetFingerprint']:
+                if availability(node) != 'new' or not target_matches(node, step):
                     raise ValueError('目标节点已变化，请重新创建执行计划，已有任务不会重生成')
                 args = resolve(shot, kind, canvas, preview=True)
                 row['requestDigest'] = digest(args)
@@ -337,7 +340,125 @@ def status(path, plan):
             'quoteId': (plan.get('quote') or {}).get('id'), 'generationSubmitted': False}
 
 
-def run(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False):
+def target_matches(node, step):
+    return jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=step.get('fingerprintVersion') in (3, 4, 5),
+                            ignore_geometry=step.get('fingerprintVersion') in (4, 5),
+                            ignore_registration=step.get('fingerprintVersion') == 5) == step['targetFingerprint']
+
+
+class LiveTracking:
+    """Poll durable receipts concurrently with submission; never generate here."""
+    def __init__(self, base, call, workers=3, interval=5):
+        self.base, self.call = base, call
+        self.workers, self.interval = workers, interval
+        self.pending = set()
+        self.errors = {}
+        self.failures = {}
+        self.lock = threading.Lock()
+        self.wake = threading.Event()
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self.loop, name='mira-production-tracking')
+        self.thread.start()
+
+    def add(self, path):
+        with self.lock:
+            self.pending.add(path)
+        self.wake.set()
+
+    def advance(self, path):
+        def read_or_attach(operation, arguments, **kwargs):
+            if operation not in {'task-get', 'canvas-get', 'canvas-apply'}:
+                raise ValueError('跟踪只能查询任务和回填节点，不能重新生成')
+            kwargs['request_timeout'] = min(kwargs.get('request_timeout', 15), 15)
+            return self.call(operation, arguments, **kwargs)
+        try:
+            result = jobs.Runner(read_or_attach, self.base, announce=lambda message: None).resume(path, timeout=0)
+            phase = result['phase']
+            if phase in STOP_PHASES:
+                with self.lock:
+                    self.errors[str(path)] = result.get('error') or phase
+                    self.failures[path] = self.failures.get(path, 0) + 1
+                if result.get('retryable'):
+                    return False
+            else:
+                with self.lock:
+                    self.errors.pop(str(path), None)
+                    self.failures.pop(path, None)
+            return phase not in {'wait_timeout', 'waiting', 'waiting_result', 'submitted', 'interrupted'}
+        except Exception as exc:
+            with self.lock:
+                self.errors[str(path)] = str(exc)
+            return True
+
+    def loop(self):
+        due = {}
+        active = {}
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            while not self.stop.is_set():
+                self.wake.clear()
+                for path, future in list(active.items()):
+                    if not future.done():
+                        continue
+                    del active[path]
+                    done = future.result()
+                    with self.lock:
+                        if done:
+                            self.pending.discard(path)
+                        else:
+                            due[path] = time.monotonic() + min(30, self.interval * 2**min(max(0, self.failures.get(path, 0)-1), 4))
+                with self.lock:
+                    paths = sorted((p for p in self.pending if p not in active), key=lambda p: due.get(p, 0))
+                for path in paths:
+                    if len(active) >= self.workers or self.stop.is_set() or due.get(path, 0) > time.monotonic():
+                        break
+                    future = pool.submit(self.advance, path)
+                    active[path] = future
+                    future.add_done_callback(lambda _: self.wake.set())
+                # Completion callbacks wake us immediately; no all-task round barrier.
+                delay = min((max(.01, due.get(p, 0)-time.monotonic()) for p in paths if p not in active), default=self.interval)
+                self.wake.wait(delay if len(active) < self.workers else self.interval)
+
+    def close(self, timeout=0):
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                with self.lock:
+                    if not self.pending:
+                        break
+                self.stop.wait(min(.1, max(0, deadline-time.monotonic())))
+        finally:
+            self.stop.set()
+            self.wake.set()
+            self.thread.join()
+
+
+def run(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False,
+        timeout=0, workers=3, poll_interval=5):
+    if not math.isfinite(timeout) or timeout < 0 or type(workers) is not int or not 1 <= workers <= 8:
+        raise ValueError('timeout 必须非负有限，workers 必须是1–8的整数')
+    if not math.isfinite(poll_interval) or not 1 <= poll_interval <= 60:
+        raise ValueError('poll-interval 必须在1–60秒之间')
+    tracker = LiveTracking(base, call, workers, poll_interval)
+    try:
+        result = submit(path, plan, base, call, stage, quote_id, max_points, confirm_spend, tracker.add)
+        try:
+            tracker.close(0 if result.get('interrupted') else timeout)
+        except KeyboardInterrupt:
+            result.update(interrupted=True, stoppedReason='用户中断，已停止跟踪；已提交任务未取消')
+    finally:
+        tracker.close()
+    if result.get('blocked'):
+        return result
+    result.update(status(path, plan), generationSubmitted=bool(result['submittedCount']))
+    result['trackingErrors'] = tracker.errors
+    attention = tracker.errors or any(s['kind'] == KINDS[stage] and s['state'] in STOP_PHASES for s in result['steps'])
+    waiting = any(s['kind'] == KINDS[stage] and s['state'] in {'wait_timeout', 'waiting', 'waiting_result', 'submitted'} for s in result['steps'])
+    result['exitCode'] = 130 if result.get('interrupted') else 4 if result['stoppedReason'] or attention else 3 if waiting and timeout else 0
+    result['next'] = 'production-resume' if waiting or attention or result.get('stoppedReason') else 'production-select' if stage == 'images' else 'production-status'
+    return result
+
+
+def submit(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False, on_submitted=lambda path: None):
     if not confirm_spend:
         raise ValueError('批量生成可能消耗积分，请先审阅报价，再使用 --confirm-spend 和 --max-points')
     limit = money(max_points)
@@ -363,7 +484,7 @@ def run(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False
     total = sum((money(r['estimatedPointsExact']) for r in pending), Decimal(0))
     if total > limit:
         raise ValueError(f'本阶段待提交报价合计 {total} 超过 --max-points {limit}，未生成')
-    count = 0; stopped = None
+    count = 0; stopped = None; interrupted = False
     for row in pending:
         shot = next(s for s in shots if s['id'] == row['shot'])
         receipt = run_path(path, plan, shot, kind)
@@ -373,7 +494,7 @@ def run(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False
                 raise ValueError('该镜头已有任务记录，停止新提交，请接续原任务')
             canvas = call('canvas-get', {'project_id': plan['projectId']})
             node = node_from(canvas, shot[kind]['nodeId'], kind)
-            if availability(node) != 'new' or jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=shot[kind].get('fingerprintVersion') == 3) != shot[kind]['targetFingerprint']:
+            if availability(node) != 'new' or not target_matches(node, shot[kind]):
                 raise ValueError('目标节点已变化，停止剩余提交')
             arguments = resolve(shot, kind, canvas)
             if digest(arguments) != row['requestDigest']:
@@ -389,7 +510,7 @@ def run(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False
                 response = call(operation, args, **kwargs)
                 if operation == 'canvas-get' and not paid[0]:
                     target = node_from(response, shot[kind]['nodeId'], kind)
-                    if jobs.fingerprint(target, ignore_runtime=True, normalize_numbers=shot[kind].get('fingerprintVersion') == 3) != shot[kind]['targetFingerprint']:
+                    if not target_matches(target, shot[kind]):
                         raise ValueError('提交前目标节点发生变化，未生成')
                     if digest(resolve(shot, kind, response)) != row['requestDigest']:
                         raise ValueError('提交前首帧发生变化，未生成')
@@ -406,12 +527,18 @@ def run(path, plan, base, call, stage, quote_id, max_points, confirm_spend=False
             result = jobs.Runner(tracked, base).start(kind + '-generate', arguments, path=receipt,
                 project_id=plan['projectId'], node_id=shot[kind]['nodeId'], timeout=0)
             count += int(paid[0])
-            if result['phase'] in STOP_PHASES or not result.get('taskId'):
+            if result['phase'] == 'interrupted':
+                interrupted = True; stopped = result.get('error') or '用户中断'; break
+            if result.get('taskId') and (result['phase'] not in STOP_PHASES or result.get('retryable')) and result['phase'] not in {'attached', 'completed'}:
+                on_submitted(receipt)
+            if (result['phase'] in STOP_PHASES and not result.get('retryable')) or not result.get('taskId'):
                 stopped = result.get('error') or result['phase']; break
+        except KeyboardInterrupt:
+            interrupted = True; stopped = '用户中断，已停止后续提交；已提交任务未取消'; break
         except jobs.ERRORS as exc:
             stopped = str(exc); break
     result = status(path, plan)
-    result.update(submittedCount=count, generationSubmitted=bool(count), stoppedReason=stopped,
+    result.update(submittedCount=count, generationSubmitted=bool(count), stoppedReason=stopped, interrupted=interrupted,
                   exitCode=4 if stopped else 0, quotedRemainingPointsExact=str(total), next='production-resume')
     return result
 
@@ -454,6 +581,8 @@ def command(options, call, origin):
     path = options.file.expanduser().resolve()
     if not path.is_file():
         raise ValueError('执行计划文件不存在')
+    if options.operation == 'production-status':
+        return status(path, load(path, base))
     with jobs.locked(path):
         plan = load(path, base)
         if options.operation == 'production-status':
@@ -463,5 +592,6 @@ def command(options, call, origin):
         if options.operation == 'production-select':
             return select(path, plan, call, options.shot, options.all, options.source_node)
         if options.operation == 'production-run':
-            return run(path, plan, base, call, options.stage, options.quote_id, options.max_points, options.confirm_spend)
+            return run(path, plan, base, call, options.stage, options.quote_id, options.max_points, options.confirm_spend,
+                       options.timeout, options.workers, options.poll_interval)
         return resume(path, plan, base, call, options.stage, options.timeout, options.workers)

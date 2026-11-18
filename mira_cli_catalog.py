@@ -52,10 +52,10 @@ NODES = {
     'useWhen':['导入许可清楚的已有配乐','调用当前站点开放的音频服务'],
     'inputs':['已有音频文件或素材','audio-generate 的 text_prompt 与可选 references'],
     'outputs':['音频 URL 或生成任务；可供支持该输入的视频模型引用'],
-    'commands':['asset-upload','canvas-apply','audio-generate','task-resume'],
+    'commands':['asset-upload','canvas-apply','audio-generate','task-resume','node-download','audio-trim'],
     'parameterMapping':{'metadata.prompt':'text_prompt（不是 prompt）','metadata.src / audioUrl':'导入或生成的可播放音频 URL','references':'按 audio-generate --schema 构造，不能假定是 URL 字符串数组'},
     'execution':{'directCommand':'audio-generate','automaticAttachment':True,'steps':['已有音频：asset-upload，再将返回 url/fileKey 写入 audio 节点','生成音频：先核对服务用途、schema 和费用；不要仅凭 audio 名称假定支持任意作曲','需要生成时显式提交 text_prompt，--wait 回填 audio 节点']},
-    'limits':['音乐检索、许可核对、裁切与混音不是创建音频节点后自动发生的功能','audio 节点的连线不等于已经混入最终视频；成片需实际混音并检查音轨'],
+    'limits':['audio-trim 可裁剪已有音频并新建关联节点，--preview-only 先保存本机 WAV 试听；音乐检索、许可核对与混音需另行处理','audio 节点的连线不等于已经混入最终视频；成片需实际混音并检查音轨'],
  },
 }
 
@@ -97,7 +97,7 @@ WORKFLOWS = {
  'import-reference': {
     'label':'导入素材并供下游引用','purpose':'使用本机文件或账号资产', 'nodes':['image','video','audio'],
     'steps':[
-      {'stage':'获取素材','commands':['asset-upload','asset-search','asset-import'],'action':'本机文件用 asset-upload；已有资产先搜索再导入，读取实际返回的 URL 和素材信息。'},
+      {'stage':'获取素材','commands':['asset-upload','asset-search','asset-contents','asset-import'],'action':'本机文件用 asset-upload；已有资产先 asset-search，集合用 asset-contents 展开，选择具体文件 importId 再 asset-import。'},
       {'stage':'展示与连接','commands':['canvas-get','canvas-apply'],'action':'使用可见媒体节点的 metadata.src 和对应 fileKey，建立 sourceId/targetId 连线并从左到右布局。'},
       {'stage':'用于生成','commands':['material-preparations','material-authenticate','video-generate'],'action':'按实际模型要求准备素材；上传成功不等于审核通过。显式把有效素材地址放入对应生成字段，再验证和报价。'},
     ],

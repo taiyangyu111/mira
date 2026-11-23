@@ -4,6 +4,8 @@
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
+手动下载与留存可选 [mira-cli-v0.9.6.zip](https://github.com/taiyangyu111/mira/releases/download/v0.9.6/mira-cli-v0.9.6.zip)，与 `mira-cli.zip` 内容完全一致。固定名称链接供 AI 自动安装使用；GitHub 的 `Source code` 为源码归档，安装请使用 CLI 压缩包。
+
 此下载包仅包含 CLI。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务。浏览器登录后自动保存凭据，无需手动复制令牌。
 
 ## v0.9.6 更新：白模转换

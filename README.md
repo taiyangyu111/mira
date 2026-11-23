@@ -1,12 +1,22 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.9.5**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.9.6**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
 此下载包仅包含 CLI。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务。浏览器登录后自动保存凭据，无需手动复制令牌。
 
-## v0.9.5 更新
+## v0.9.6 更新：白模转换
+
+- `white-model-options`：查询当前站点是否开放白模转换。
+- `white-model-quote`：按源视频实际时长查询费用；内部用量统计与外部积分扣费以返回的计费模式为准。
+- `video-white-model`：转换已有视频，支持 `--wait` 等待、回填指定结果节点，以及通过 `task-resume` 接续。
+
+需要配套服务端开放白模接口和 CLI 权限。先查询功能是否可用与费用，再经用户确认提交；未知报价不代表免费，参考预估不是最终结算金额。仅更新下载包不会更新网站，也不会自动开放未部署的功能。
+
+见 [白模转换操作说明](CLI_GUIDE.md#白模转换v096)。本次保留原有 CLI 功能，不包含 MCP 客户端。
+
+## v0.9.5 更新（历史记录）
 
 - 显示服务端具体错误原因，兼容 `detail`、`message` 和 `error`。
 - 修复浏览器自动记录媒体尺寸、素材登记信息引发的节点修改误报；真实提示词、模型和素材变更仍受保护。

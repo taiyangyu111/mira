@@ -42,7 +42,7 @@ NODES = {
     'useWhen':['构图确认后生成动态镜头','导入外部完成的剪辑结果'],
     'inputs':['prompt','图生视频 firstFrameImage','多模态 referenceImages/referenceVideos/referenceAudios，受模型限制'],
     'outputs':['视频任务 ID','完成后的 resultUrl、metadata.src'],
-    'commands':['canvas-get','canvas-apply','video-generate','task-resume','task-download','asset-upload'],
+    'commands':['canvas-get','canvas-apply','video-generate','task-resume','task-download','asset-upload','white-model-options','white-model-quote','video-white-model'],
     'parameterMapping':{'metadata.prompt':'prompt','metadata.videoModel':'model','metadata.videoAspectRatio':'aspectRatio','metadata.videoDuration':'duration','metadata.videoResolution':'resolution','metadata.videoFps':'fps','metadata.videoGenAudio / generateAudio':'generateAudio','上游图片 metadata.src/resultUrl':'firstFrameImage（图生视频）','metadata.videoMode':'界面值不等于 API mode，按实际输入选择 text_to_video/image_to_video/first_last_frame/multimodal'},
     'execution':{'directCommand':'video-generate','automaticAttachment':True,'steps':['先确认首帧和运镜，再构造请求','验证、报价、费用授权','video-generate --wait 指定目标和独立 run-file','task-download 后核对实际分辨率、时长、音轨；不能把请求值当作成品规格']},
     'limits':['视频节点不等于剪辑器，连接多个视频不会自动拼接','当前已核对的本机版本中 Seedance 2.5 只采用480p/720p，1080p请求会被降为720p；其他站点或后续版本需重新核对','CLI 未提供公开的时间线运行或转场混音命令；需要外部剪辑时明确说明，再 asset-upload 回填现有可见视频节点'],

@@ -271,3 +271,42 @@ python mira.py audio-trim --project-id 画布UUID --node-id audio-1 --start 0.5 
 - run-file 必须为 .json，试听文件为同目录同名 .wav。原音频保持不变。发布 WAV 受当前画布 15 MB 音频上传限制，超限仍保留本机试听文件。
 - 使用相同站点、节点、区间和 run-file 接续，上传成功后只重试回填；已完成时返回原结果节点，不重复创建。画布 409 冲突会重读版本；源音频更换后停止，避免处理过期素材。
 - 下载和试听需要读取权限；上传、回填还需编辑权限。本流程不提交图片、视频或音频生成，不需要 --confirm-spend。
+
+
+## 白模转换（v0.9.6）
+
+源视频可以来自上传素材或已有生成结果。先确认站点开放该功能，再查询费用：
+
+```powershell
+python mira.py white-model-options
+python mira.py white-model-quote --example
+python mira.py white-model-quote --file quote.json
+```
+
+`quote.json` 内容示例（请填写源视频真实时长）：
+
+```json
+{"durationSeconds": 10}
+```
+
+`enabled=false` 或 `available=false` 时停止转换。接口返回 404/403 时核对服务端版本、功能开关和账号权限。`estimateAvailable=false` 表示无法预估，不代表免费；`accountingMode=usage` 为内部用量统计，其余模式需核对站点扣费规则，参考预估与最终结算可能不同。
+
+准备 `white-model.json`，视频地址使用上传或素材查询返回的实际可访问地址，不支持直接传本地文件路径：
+
+```json
+{
+  "videoUrl": "https://example.com/source.mp4",
+  "parameters": {"durationSeconds": 10}
+}
+```
+
+先创建一个视频结果节点并连接源节点，再在取得用户费用确认后执行：
+
+```powershell
+python mira.py video-white-model --file white-model.json --validate-only
+python mira.py video-white-model --file white-model.json --confirm-spend --wait --project-id <画布UUID> --node-id <结果节点ID> --run-file white-model-run.json
+```
+
+原视频节点保留。`--project-id` 与 `--node-id` 必须同时提供；不指定时只生成，不自动创建结果节点。没有风格、多人锁定等可调参数，`prompt` 仅作为任务说明。
+
+超时、中断或回填失败后，先运行 `python mira.py task-resume --help`，按帮助使用原 `white-model-run.json` 接续已有任务，不要重复运行生成命令。生成成功但回填失败只恢复回填。

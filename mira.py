@@ -28,6 +28,8 @@ OPERATIONS = {
     'asset-upload': ('POST', CANVAS + '/media/references', '上传图片、视频或音频参考素材'),
     'model-list': ('GET', CANVAS + '/ai/config', '读取 Mira 画布模型配置'),
     'generation-quote': ('POST', CANVAS + '/ai/generation/quote', '查询图片或视频估价及是否可用'),
+    'white-model-options': ('GET', CANVAS + '/ai/videos/white-model/options', '查询当前站点白模转换是否开放'),
+    'white-model-quote': ('POST', CANVAS + '/ai/videos/white-model/quote', '查询白模转换费用，无法估价不代表免费'),
     'task-get': ('GET', CANVAS + '/ai/tasks/{task_id}', '查询自己的画布任务状态与结果'),
     'node-download': ('GET', CANVAS + '/canvases/{project_id}/nodes/{node_id}/download', '下载当前媒体节点，可指定结果序号'),
     'task-download': ('GET', CANVAS + '/ai/tasks/{task_id}/download', '下载已归档的任务结果到 output'),
@@ -43,6 +45,7 @@ GENERATION_OPERATIONS = {
     'text-generate': ('/chat/completions', '执行文本创作'),
     'image-generate': ('/images/generate', '提交图片生成'),
     'video-generate': ('/videos/generate', '提交视频生成'),
+    'video-white-model': ('/videos/white-model', '将已有视频转换为白模视频'),
     'audio-generate': ('/audio/seed/generate', '提交音频生成'),
 }
 OPERATIONS.update({name: ('POST', CANVAS + '/ai' + path, description)
@@ -173,7 +176,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.9.5')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.9.6')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -482,6 +485,8 @@ def main():
                         print('提示：' + warning, file=sys.stderr)
                 if options.operation in GENERATION_OPERATIONS and not options.confirm_spend:
                     raise ValueError('此操作可能消耗积分，请先查看报价并传入 --confirm-spend')
+                if options.operation == 'video-white-model':
+                    arguments['confirmSpend'] = True
                 if getattr(options, 'check_model', False):
                     if options.skip_validation:
                         raise ValueError('--check-model 不能与 --skip-validation 同用')

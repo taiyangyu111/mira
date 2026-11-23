@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 
 import httpx
 
-MEDIA_OPERATIONS = {'image-generate': 'image', 'video-generate': 'video', 'audio-generate': 'audio'}
+MEDIA_OPERATIONS = {'image-generate': 'image', 'video-generate': 'video', 'audio-generate': 'audio', 'video-white-model': 'video'}
 SUCCEEDED = {'completed', 'succeeded', 'success'}
 FAILED = {'failed', 'cancelled', 'canceled', 'error'}
 PENDING = {'pending', 'queued', 'queuing', 'processing', 'running', 'waiting', 'submitted', 'accepted', 'in_progress'}

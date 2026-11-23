@@ -2096,6 +2096,74 @@
         "id": "11111111-1111-4111-8111-111111111111"
       },
       "notes": "source=material 需要 id；generated/library 需要当前账号生成素材的 url。"
+    },
+    "white-model-options": {
+      "schema": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      },
+      "example": {},
+      "notes": "只读查询；enabled 为 false 时不要调用转换。"
+    },
+    "white-model-quote": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "durationSeconds": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 86400,
+            "description": "读取源视频得到的实际时长（秒）"
+          }
+        },
+        "required": [
+          "durationSeconds"
+        ],
+        "additionalProperties": false
+      },
+      "example": {
+        "durationSeconds": 3
+      },
+      "notes": "estimateAvailable=false 时按实际用量结算，不代表免费。"
+    },
+    "video-white-model": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "videoUrl": {
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https?://",
+            "description": "已上传的可用视频地址"
+          },
+          "prompt": {
+            "type": "string",
+            "description": "任务说明；不改变白模风格"
+          },
+          "parameters": {
+            "type": "object",
+            "description": "来源和画布追踪信息；不要填写自定义价格"
+          },
+          "confirmSpend": {
+            "type": "boolean",
+            "default": false,
+            "description": "CLI 根据 --confirm-spend 设置；仅填写此字段不能绕过命令行费用确认"
+          }
+        },
+        "required": [
+          "videoUrl"
+        ],
+        "additionalProperties": false
+      },
+      "example": {
+        "videoUrl": "https://example.com/source.mp4",
+        "parameters": {
+          "durationSeconds": 3
+        }
+      },
+      "notes": "先 white-model-options 和 white-model-quote，取得费用授权后 --confirm-spend。--wait --project-id --node-id --run-file 可等待并回填预先创建的结果节点；原节点保留。中断后 task-resume，不要重复提交。没有可调风格参数。"
     }
   }
 }

@@ -1,14 +1,26 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.9.6**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.9.7**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
-手动下载与留存可选 [mira-cli-v0.9.6.zip](https://github.com/taiyangyu111/mira/releases/download/v0.9.6/mira-cli-v0.9.6.zip)，与 `mira-cli.zip` 内容完全一致。固定名称链接供 AI 自动安装使用；GitHub 的 `Source code` 为源码归档，安装请使用 CLI 压缩包。
+手动下载与留存可选 [mira-cli-v0.9.7.zip](https://github.com/taiyangyu111/mira/releases/download/v0.9.7/mira-cli-v0.9.7.zip)，与 `mira-cli.zip` 内容完全一致。固定名称链接供 AI 自动安装使用；GitHub 的 `Source code` 为源码归档，安装请使用 CLI 压缩包。
 
 此下载包仅包含 CLI。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务。浏览器登录后自动保存凭据，无需手动复制令牌。
 
-## v0.9.6 更新：白模转换
+## v0.9.7 更新：排队与超时恢复
+
+- 提交前保存请求编号，先接收排队回执，再跟踪生成任务。
+- 超时、中断或重启后，通过原记录 `task-resume` 接续；批次和执行计划同样支持，不自动重复提交生成。
+- 保留旧同步 504 的排队编号，方便恢复；失败详情与原始视频节点保护也已同步。
+
+**需要服务端配套更新：**站点须开放当前账号的排队回执查询权限。仅升级 CLI 不能消除旧服务端的回执 403，也不会部署网站或修复供应商权限问题。服务端修复目前已本地验收，尚未部署测试服或正式服。
+
+升级请解压到新目录，按下方说明安装依赖；保留系统登录凭据与原 `.mira/runs`、批次和计划文件，使用相同 `MIRA_URL` 接续。旧记录如果没有任何请求或任务编号，需要先在站点核对原任务。
+
+回归验证：301 项通过、3 项跳过；本地回执查询返回 200，已有成功任务回填与下载通过。新白模实测另遇生成端权限不足，因此本次不宣称新白模生成完整流程验收通过。
+
+## v0.9.6 更新：白模转换（历史记录）
 
 - `white-model-options`：查询当前站点是否开放白模转换。
 - `white-model-quote`：按源视频实际时长查询费用；内部用量统计与外部积分扣费以返回的计费模式为准。

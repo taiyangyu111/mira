@@ -162,8 +162,10 @@ def create(layout_file, out, base, call, image_model=None, video_model=None, ima
                         'aspectRatio': m.get('videoAspectRatio', '16:9'), 'fps': numeric_setting(m.get('videoFps', 24)),
                         'generateAudio': m.get('videoGenAudio', m.get('generateAudio', False)),
                         'autoDuration': False, 'outputFormat': 'mp4'}
-            shot[kind] = {'nodeId': node['id'], 'arguments': args, 'fingerprintVersion': 5,
-                          'targetFingerprint': jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=True, ignore_geometry=True, ignore_registration=True),
+            source_id = row['nodes'].get('image') if kind == 'video' else None
+            shot[kind] = {'nodeId': node['id'], 'arguments': args, 'fingerprintVersion': 6,
+                          'referenceSourceNodeId': source_id,
+                          'targetFingerprint': jobs.fingerprint(plan_target(node, canvas, source_id), ignore_runtime=True, normalize_numbers=True, ignore_geometry=True, ignore_registration=True),
                           'initialState': availability(node), 'existingTaskId': m.get('taskId')}
         result['shots'].append(shot)
     # Creation never changes a canvas or submits a task.
@@ -239,7 +241,7 @@ def analyze(path, plan, call):
                         row['errors'].append('已有任务需要处理，请接续或核对，不会重新生成')
                     continue
                 node = node_from(canvas, step['nodeId'], kind)
-                if availability(node) != 'new' or not target_matches(node, step):
+                if availability(node) != 'new' or not target_matches(node, step, canvas):
                     raise ValueError('目标节点已变化，请重新创建执行计划，已有任务不会重生成')
                 args = resolve(shot, kind, canvas, preview=True)
                 row['requestDigest'] = digest(args)
@@ -340,10 +342,17 @@ def status(path, plan):
             'quoteId': (plan.get('quote') or {}).get('id'), 'generationSubmitted': False}
 
 
-def target_matches(node, step):
-    return jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=step.get('fingerprintVersion') in (3, 4, 5),
-                            ignore_geometry=step.get('fingerprintVersion') in (4, 5),
-                            ignore_registration=step.get('fingerprintVersion') == 5) == step['targetFingerprint']
+def plan_target(node, canvas, source_id):
+    return jobs.derived_reference_target(node, canvas, source_id)
+
+
+def target_matches(node, step, canvas=None):
+    version = step.get('fingerprintVersion')
+    if version == 6:
+        node = plan_target(node, canvas, step.get('referenceSourceNodeId'))
+    return jobs.fingerprint(node, ignore_runtime=True, normalize_numbers=version in (3, 4, 5, 6),
+                            ignore_geometry=version in (4, 5, 6),
+                            ignore_registration=version in (5, 6)) == step['targetFingerprint']
 
 
 class LiveTracking:
@@ -367,7 +376,7 @@ class LiveTracking:
 
     def advance(self, path):
         def read_or_attach(operation, arguments, **kwargs):
-            if operation not in {'task-get', 'canvas-get', 'canvas-apply'}:
+            if operation not in {'task-get', 'canvas-get', 'canvas-apply', '_queue-get', '_queue-find'}:
                 raise ValueError('跟踪只能查询任务和回填节点，不能重新生成')
             kwargs['request_timeout'] = min(kwargs.get('request_timeout', 15), 15)
             return self.call(operation, arguments, **kwargs)
@@ -494,7 +503,7 @@ def submit(path, plan, base, call, stage, quote_id, max_points, confirm_spend=Fa
                 raise ValueError('该镜头已有任务记录，停止新提交，请接续原任务')
             canvas = call('canvas-get', {'project_id': plan['projectId']})
             node = node_from(canvas, shot[kind]['nodeId'], kind)
-            if availability(node) != 'new' or not target_matches(node, shot[kind]):
+            if availability(node) != 'new' or not target_matches(node, shot[kind], canvas):
                 raise ValueError('目标节点已变化，停止剩余提交')
             arguments = resolve(shot, kind, canvas)
             if digest(arguments) != row['requestDigest']:
@@ -510,7 +519,7 @@ def submit(path, plan, base, call, stage, quote_id, max_points, confirm_spend=Fa
                 response = call(operation, args, **kwargs)
                 if operation == 'canvas-get' and not paid[0]:
                     target = node_from(response, shot[kind]['nodeId'], kind)
-                    if not target_matches(target, shot[kind]):
+                    if not target_matches(target, shot[kind], response):
                         raise ValueError('提交前目标节点发生变化，未生成')
                     if digest(resolve(shot, kind, response)) != row['requestDigest']:
                         raise ValueError('提交前首帧发生变化，未生成')
@@ -520,18 +529,19 @@ def submit(path, plan, base, call, stage, quote_id, max_points, confirm_spend=Fa
             def tracked(operation, args, **kwargs):
                 if operation == kind + '-generate':
                     paid[0] = True
-                elif operation not in ('canvas-get', 'canvas-apply', 'task-get'):
+                elif operation not in ('canvas-get', 'canvas-apply', 'task-get', '_queue-get', '_queue-find'):
                     raise ValueError('执行计划禁止调用其他操作')
                 return guarded(operation, args, **kwargs)
 
             result = jobs.Runner(tracked, base).start(kind + '-generate', arguments, path=receipt,
-                project_id=plan['projectId'], node_id=shot[kind]['nodeId'], timeout=0)
+                project_id=plan['projectId'], node_id=shot[kind]['nodeId'], timeout=0,
+                reference_source_id=shot[kind].get('referenceSourceNodeId'))
             count += int(paid[0])
             if result['phase'] == 'interrupted':
                 interrupted = True; stopped = result.get('error') or '用户中断'; break
-            if result.get('taskId') and (result['phase'] not in STOP_PHASES or result.get('retryable')) and result['phase'] not in {'attached', 'completed'}:
+            if (result.get('taskId') or result.get('queueJobId')) and (result['phase'] not in STOP_PHASES or result.get('retryable')) and result['phase'] not in {'attached', 'completed'}:
                 on_submitted(receipt)
-            if (result['phase'] in STOP_PHASES and not result.get('retryable')) or not result.get('taskId'):
+            if (result['phase'] in STOP_PHASES and not result.get('retryable')) or not (result.get('taskId') or result.get('queueJobId')):
                 stopped = result.get('error') or result['phase']; break
         except KeyboardInterrupt:
             interrupted = True; stopped = '用户中断，已停止后续提交；已提交任务未取消'; break

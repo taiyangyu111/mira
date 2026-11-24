@@ -93,14 +93,18 @@ def response_error(response):
     return (body if isinstance(body, str) else json.dumps(body, ensure_ascii=False))[:4000]
 
 
-def call(operation, arguments=None, *, token=None, base=None, upload_root=None, request_timeout=90):
-    method, path, _ = OPERATIONS[operation]
+def call(operation, arguments=None, *, token=None, base=None, upload_root=None, request_timeout=90, request_id=None):
+    internal = {
+        '_queue-get': ('GET', CANVAS + '/ai/jobs/{job_id}', ''),
+        '_queue-find': ('GET', CANVAS + '/ai/jobs/requests/{request_id}', ''),
+    }
+    method, path, _ = (internal if operation in internal else OPERATIONS)[operation]
     arguments = dict(arguments or {})
     if operation == 'asset-import' and str(arguments.get('asset_id', '')).startswith('person:'):
         raise ValueError('这是人物集合 ID；请先运行 asset-contents，选择返回的 importId 再 asset-import')
     if operation == 'canvas-create' and (not isinstance(arguments.get('title'), str) or not arguments['title'].strip()):
         raise ValueError('创建画布必须填写名称，请根据创作内容填写非空 title')
-    for key in ('project_id', 'asset_id', 'item_id', 'task_id', 'material_id', 'node_id'):
+    for key in ('project_id', 'asset_id', 'item_id', 'task_id', 'material_id', 'node_id', 'job_id', 'request_id'):
         placeholder = '{' + key + '}'
         if placeholder in path:
             identifier = str(arguments.pop(key))
@@ -112,6 +116,11 @@ def call(operation, arguments=None, *, token=None, base=None, upload_root=None, 
     if not token:
         raise ValueError('请先运行 login 在浏览器授权；也可用 auth-save 或 MIRA_TOKEN 提供令牌')
     headers = {'Authorization': 'Bearer ' + token}
+    if request_id is not None:
+        import re
+        if not re.fullmatch(r'[A-Za-z0-9_-]{16,128}', request_id):
+            raise ValueError('无效的排队请求编号')
+        headers.update({'X-Canvas-Async': '1', 'X-Canvas-Request-ID': request_id})
     with httpx.Client(base_url=base, headers=headers, trust_env=False, timeout=request_timeout) as client:
         if operation == 'asset-upload':
             file = Path(arguments.pop('file')).expanduser()
@@ -160,7 +169,15 @@ def call(operation, arguments=None, *, token=None, base=None, upload_root=None, 
         else:
             response = client.post(path, json=arguments)
         if not response.is_success:
-            raise MiraHTTPError(response.status_code, response_error(response))
+            error = MiraHTTPError(response.status_code, response_error(response))
+            try:
+                detail = response.json().get('detail', {})
+                import re
+                if isinstance(detail, dict) and detail.get('code') == 'CANVAS_JOB_WAIT_TIMEOUT' and re.fullmatch('[a-f0-9]{32}', str(detail.get('jobId', ''))):
+                    error.queue_job_id = detail['jobId']
+            except (ValueError, AttributeError):
+                pass
+            raise error
         return response.json()
 
 
@@ -176,7 +193,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.9.6')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.9.7')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -546,7 +563,7 @@ def main():
                     elif result.get('id') is not None:
                         receipt['id'] = result['id']
                     if managed:
-                        receipt.update({k: result.get(k) for k in ('phase', 'runFile', 'resume', 'nextAction', 'exitCode')})
+                        receipt.update({k: result.get(k) for k in ('phase', 'runFile', 'resume', 'nextAction', 'exitCode', 'requestId', 'queueJobId')})
                 result = receipt
             else:
                 result = cli.output_view(options.operation, result, summary=getattr(options, 'summary', False),

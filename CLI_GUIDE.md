@@ -1,4 +1,15 @@
-# CLI 使用说明（v0.9.5）
+# CLI 使用说明（v0.9.7）
+
+## 排队与超时恢复（v0.9.7）
+
+提交前保存请求编号，排队期间先返回 `queueJobId`，随后取得 `taskId`。超时、中断或重启后使用原 `runFile` 执行 `task-resume`，也支持批次及执行计划接续；不会自动再次提交生成。服务端需开放回执查询权限，仅升级 CLI 不能修复旧服务端的 403。
+
+## 白模转换（v0.9.6）
+
+1. `python mira.py white-model-options` 检查当前站点是否开放。
+2. `python mira.py white-model-quote --json '{"durationSeconds":3}'` 查询参考积分；无法估价不代表免费。
+3. 将已有视频上传后，运行 `video-white-model --json '{"videoUrl":"https://example.com/source.mp4","parameters":{"durationSeconds":3}}' --confirm-spend --wait --project-id <画布ID> --node-id <结果节点ID>`。请替换为实际可用地址，并先确认费用。
+4. 中断后使用返回的 `runFile` 执行 `task-resume --run-file <文件>`，避免重复提交。原视频节点保留，结果回填到指定的结果节点。上游未公开风格或多人锁定参数。
 
 ## 素材集合与同步修复（v0.9.5）
 
@@ -176,7 +187,7 @@ python mira.py video-generate --file video.json --confirm-spend --wait --timeout
 
 指定回填目标或 `--run-file` 也会启用等待。默认每 5 秒查询一次，可用 `--poll-interval` 调整为 1–60 秒；默认等待预算为 600 秒，`--timeout 0` 只检查当前状态。预算针对提交后的轮询，提交和回填还有独立的网络请求时间，不是整个命令的总耗时上限。
 
-任务提交后会立即在 stderr 输出任务 ID 和记录路径；stdout 最终输出一份 JSON 回执。记录文件默认保存在当前目录 `.mira/runs/<随机ID>.json`，也可以显式指定 `--run-file`。记录包含站点、任务 ID、画布和节点 ID、回填操作 ID、结果地址及执行状态，不保存访问令牌和生成参数。不要把私人任务记录提交到公共仓库。
+提交前会在 stderr 输出请求编号和记录路径；stdout 最终输出一份 JSON 回执。服务端开启队列时，先返回 `queueJobId`，生成任务创建后再取得 `taskId`；尚无 `taskId` 不代表提交失败。记录文件默认保存在当前目录 `.mira/runs/<随机ID>.json`，也可以显式指定 `--run-file`。记录包含站点、请求编号、排队编号、任务 ID、画布和节点 ID、回填操作 ID、结果地址及执行状态，不保存访问令牌和生成参数。不要把私人任务记录提交到公共仓库。
 
 超时、中断或回填失败后，使用原记录接续：
 
@@ -185,6 +196,8 @@ python mira.py task-resume --run-file cat-run.json --timeout 600
 ```
 
 `task-resume` **不会重新生成**：先查询原任务的服务端状态；已成功的任务只进行回填或确认已回填。即便进程在回填成功后丢失响应，也会识别节点上已有的相同结果。同一记录只能由一个 CLI 进程使用。
+
+排队超过 30 秒、提交响应丢失或进程中断后，CLI 使用已保存的请求编号找回原回执，再跟踪生成结果；`batch-resume` 和执行计划接续也支持此流程。查询返回 403/404 或服务端标记结果待核对时，保留原记录，不会自动再次提交。旧记录若既没有任务 ID，也没有请求或排队编号，需要先在站点核对原任务，取得任务 ID 后使用 `task-wait`。
 
 已有任务但没有记录文件时：
 
@@ -271,42 +284,3 @@ python mira.py audio-trim --project-id 画布UUID --node-id audio-1 --start 0.5 
 - run-file 必须为 .json，试听文件为同目录同名 .wav。原音频保持不变。发布 WAV 受当前画布 15 MB 音频上传限制，超限仍保留本机试听文件。
 - 使用相同站点、节点、区间和 run-file 接续，上传成功后只重试回填；已完成时返回原结果节点，不重复创建。画布 409 冲突会重读版本；源音频更换后停止，避免处理过期素材。
 - 下载和试听需要读取权限；上传、回填还需编辑权限。本流程不提交图片、视频或音频生成，不需要 --confirm-spend。
-
-
-## 白模转换（v0.9.6）
-
-源视频可以来自上传素材或已有生成结果。先确认站点开放该功能，再查询费用：
-
-```powershell
-python mira.py white-model-options
-python mira.py white-model-quote --example
-python mira.py white-model-quote --file quote.json
-```
-
-`quote.json` 内容示例（请填写源视频真实时长）：
-
-```json
-{"durationSeconds": 10}
-```
-
-`enabled=false` 或 `available=false` 时停止转换。接口返回 404/403 时核对服务端版本、功能开关和账号权限。`estimateAvailable=false` 表示无法预估，不代表免费；`accountingMode=usage` 为内部用量统计，其余模式需核对站点扣费规则，参考预估与最终结算可能不同。
-
-准备 `white-model.json`，视频地址使用上传或素材查询返回的实际可访问地址，不支持直接传本地文件路径：
-
-```json
-{
-  "videoUrl": "https://example.com/source.mp4",
-  "parameters": {"durationSeconds": 10}
-}
-```
-
-先创建一个视频结果节点并连接源节点，再在取得用户费用确认后执行：
-
-```powershell
-python mira.py video-white-model --file white-model.json --validate-only
-python mira.py video-white-model --file white-model.json --confirm-spend --wait --project-id <画布UUID> --node-id <结果节点ID> --run-file white-model-run.json
-```
-
-原视频节点保留。`--project-id` 与 `--node-id` 必须同时提供；不指定时只生成，不自动创建结果节点。没有风格、多人锁定等可调参数，`prompt` 仅作为任务说明。
-
-超时、中断或回填失败后，先运行 `python mira.py task-resume --help`，按帮助使用原 `white-model-run.json` 接续已有任务，不要重复运行生成命令。生成成功但回填失败只恢复回填。

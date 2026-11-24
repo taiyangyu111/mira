@@ -64,14 +64,14 @@ def row(path, state):
         status = 'completed'
     elif generation == 'succeeded' and state.get('resultUrl'):
         status = 'ready_to_attach' if state.get('projectId') else 'completed'
-    elif not state.get('taskId') or phase in ('submission_unknown', 'preflight_failed'):
+    elif not (state.get('taskId') or state.get('queueJobId')) or phase in ('submission_unknown', 'preflight_failed'):
         status = 'needs_attention'
     elif phase == 'query_failed':
         status = 'query_failed'
     else:
         status = 'running'
     return {'runFile': str(path), 'status': status, **{k: state.get(k) for k in (
-        'taskId', 'phase', 'generation', 'attachment', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'retryable')}}
+        'taskId', 'queueJobId', 'requestId', 'phase', 'generation', 'attachment', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'retryable')}}
 
 
 def error_row(path, exc):
@@ -144,14 +144,15 @@ def resume(path, base, call, *, timeout=0, poll_interval=5, workers=3, attachmen
     def advance(receipt):
         try:
             state = read_receipt(receipt, base)
-            should_skip = state.get('phase') in TERMINAL or not state.get('taskId')
+            recoverable_queue = (state.get('queueJobId') or state.get('requestId')) and state.get('generation') in {'unknown', 'pending'}
+            should_skip = (state.get('phase') in TERMINAL or not state.get('taskId')) and not recoverable_queue
             if attachments_only and not (state.get('generation') == 'succeeded' and state.get('attachment') in ('pending', 'failed')):
                 should_skip = True
             if should_skip or (timeout > 0 and clock() >= deadline):
                 return row(receipt, state)
 
             def bounded_call(operation, arguments, **kwargs):
-                if operation not in {'task-get', 'canvas-get', 'canvas-apply'}:
+                if operation not in {'task-get', 'canvas-get', 'canvas-apply', '_queue-get', '_queue-find'}:
                     raise ValueError('批次接续只能读取任务或回填节点')
                 if timeout > 0:
                     remaining = deadline - clock()

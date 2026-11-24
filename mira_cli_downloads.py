@@ -181,45 +181,46 @@ def trim_audio(options, base, call):
                 raise ValueError('音频上传未返回地址，请检查响应')
             state.update(uploaded=uploaded, phase='uploaded')
             jobs.save(path, state)
-        for attempt in range(3):
-            canvas = call('canvas-get', {'project_id': options.project_id})
-            source, version = jobs.target_node(canvas, options.node_id, 'audio')
-            existing = next((n for n in document(canvas).get('nodes', []) if n.get('id') == state['nodeId']), None)
-            if existing:
-                if (existing.get('metadata') or {}).get('cliTrimOperationId') != state['operationId']:
-                    raise ValueError('结果节点 ID 冲突，未覆盖现有节点')
+        with jobs.canvas_write(base, options.project_id):
+            for attempt in range(3):
+                canvas = call('canvas-get', {'project_id': options.project_id})
+                source, version = jobs.target_node(canvas, options.node_id, 'audio')
+                existing = next((n for n in document(canvas).get('nodes', []) if n.get('id') == state['nodeId']), None)
+                if existing:
+                    if (existing.get('metadata') or {}).get('cliTrimOperationId') != state['operationId']:
+                        raise ValueError('结果节点 ID 冲突，未覆盖现有节点')
+                    state['phase'] = 'attached'; jobs.save(path, state)
+                    return {**state, 'runFile': str(path), 'exitCode': 0}
+                meta = source.get('metadata') or {}
+                if jobs.normalized(meta.get('src') or meta.get('resultUrl')) != state['sourceUrl']:
+                    raise ValueError('源音频已更换；上传结果和记录已保留，未修改画布')
+                uploaded = state['uploaded']; url = uploaded['url']
+                node = {'id': state['nodeId'], 'type': 'audio',
+                        'x': source.get('x', 0) + source.get('width', 640) + 80, 'y': source.get('y', 0),
+                        'width': source.get('width', 640), 'height': source.get('height', 138),
+                        'metadata': {'title': str(meta.get('title') or '音频')+'-裁剪', 'src': url, 'resultUrl': url,
+                                     'resultUrls': [url], 'activeResultIndex': 0, 'fileKey': uploaded.get('fileKey'),
+                                     'mimeType': 'audio/wav', 'duration': options.end-options.start,
+                                     'audioDuration': options.end-options.start, 'audioTrimStart': options.start,
+                                     'audioTrimEnd': options.end, 'actionType': 'audio-trim',
+                                     'sourceNodeId': options.node_id, 'cliTrimOperationId': state['operationId'],
+                                     'status': 'succeeded', 'taskStatus': 'completed', 'progress': 100}}
+                actions = [{'type': 'add_node', 'payload': {'node': node}},
+                           {'type': 'add_connection', 'payload': {'connection': {'id': state['nodeId']+'-source',
+                            'sourceId': options.node_id, 'targetId': state['nodeId']}}}]
+                try:
+                    call('canvas-apply', {'project_id': options.project_id, 'baseVersion': version,
+                                         'operationId': state['operationId'], 'actions': actions})
+                except jobs.ERRORS as exc:
+                    if getattr(exc, 'status_code', None) == 409 and attempt < 2:
+                        continue
+                    raise
+                verified = call('canvas-get', {'project_id': options.project_id})
+                target, _ = jobs.target_node(verified, state['nodeId'], 'audio')
+                if (target.get('metadata') or {}).get('cliTrimOperationId') != state['operationId']:
+                    raise ValueError('裁剪回填未通过验证，接续时不会重新生成')
                 state['phase'] = 'attached'; jobs.save(path, state)
                 return {**state, 'runFile': str(path), 'exitCode': 0}
-            meta = source.get('metadata') or {}
-            if jobs.normalized(meta.get('src') or meta.get('resultUrl')) != state['sourceUrl']:
-                raise ValueError('源音频已更换；上传结果和记录已保留，未修改画布')
-            uploaded = state['uploaded']; url = uploaded['url']
-            node = {'id': state['nodeId'], 'type': 'audio',
-                    'x': source.get('x', 0) + source.get('width', 640) + 80, 'y': source.get('y', 0),
-                    'width': source.get('width', 640), 'height': source.get('height', 138),
-                    'metadata': {'title': str(meta.get('title') or '音频')+'-裁剪', 'src': url, 'resultUrl': url,
-                                 'resultUrls': [url], 'activeResultIndex': 0, 'fileKey': uploaded.get('fileKey'),
-                                 'mimeType': 'audio/wav', 'duration': options.end-options.start,
-                                 'audioDuration': options.end-options.start, 'audioTrimStart': options.start,
-                                 'audioTrimEnd': options.end, 'actionType': 'audio-trim',
-                                 'sourceNodeId': options.node_id, 'cliTrimOperationId': state['operationId'],
-                                 'status': 'succeeded', 'taskStatus': 'completed', 'progress': 100}}
-            actions = [{'type': 'add_node', 'payload': {'node': node}},
-                       {'type': 'add_connection', 'payload': {'connection': {'id': state['nodeId']+'-source',
-                        'sourceId': options.node_id, 'targetId': state['nodeId']}}}]
-            try:
-                call('canvas-apply', {'project_id': options.project_id, 'baseVersion': version,
-                                     'operationId': state['operationId'], 'actions': actions})
-            except jobs.ERRORS as exc:
-                if getattr(exc, 'status_code', None) == 409 and attempt < 2:
-                    continue
-                raise
-            verified = call('canvas-get', {'project_id': options.project_id})
-            target, _ = jobs.target_node(verified, state['nodeId'], 'audio')
-            if (target.get('metadata') or {}).get('cliTrimOperationId') != state['operationId']:
-                raise ValueError('裁剪回填未通过验证，接续时不会重新生成')
-            state['phase'] = 'attached'; jobs.save(path, state)
-            return {**state, 'runFile': str(path), 'exitCode': 0}
 
 
 def execute(options, base, call):

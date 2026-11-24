@@ -94,6 +94,19 @@ def response_error(response):
 
 
 def call(operation, arguments=None, *, token=None, base=None, upload_root=None, request_timeout=90, request_id=None):
+    if operation == 'canvas-apply':
+        if __package__:
+            from . import mira_cli_jobs as jobs
+        else:
+            import mira_cli_jobs as jobs
+        with jobs.canvas_write(origin(base), (arguments or {}).get('project_id')):
+            return _call(operation, arguments, token=token, base=base, upload_root=upload_root,
+                         request_timeout=request_timeout, request_id=request_id)
+    return _call(operation, arguments, token=token, base=base, upload_root=upload_root,
+                 request_timeout=request_timeout, request_id=request_id)
+
+
+def _call(operation, arguments=None, *, token=None, base=None, upload_root=None, request_timeout=90, request_id=None):
     internal = {
         '_queue-get': ('GET', CANVAS + '/ai/jobs/{job_id}', ''),
         '_queue-find': ('GET', CANVAS + '/ai/jobs/requests/{request_id}', ''),
@@ -193,7 +206,7 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.9.7')
+    parser.add_argument('--version', action='version', version='Mira CLI 0.9.8')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):
@@ -202,7 +215,7 @@ def main():
         command.add_argument('--poll-interval', type=float, default=5, help='轮询间隔秒数，默认 5，范围 1–60')
         if not resume:
             command.add_argument('--project-id', help='回填目标画布 UUID，须同时指定 --node-id')
-            command.add_argument('--node-id', help='回填目标媒体节点 ID')
+            command.add_argument('--node-id', help='回填目标节点 ID，类型须与生成结果一致')
     for name, (_, _, description) in OPERATIONS.items():
         command = commands.add_parser(name, help=description, description=description,
                                       epilog=cli.command_help(name), formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -227,8 +240,8 @@ def main():
             command.add_argument('--confirm-spend', action='store_true', help='确认执行可能消耗积分的操作')
         if name in {'image-generate', 'video-generate'}:
             command.add_argument('--check-model', action='store_true', help='提交前读取当前服务端模型规则并检查；仅检查请用 generation-check')
-        if name in jobs.MEDIA_OPERATIONS:
-            command.add_argument('--wait', action='store_true', help='等待图片/视频/音频结果；指定回填目标或记录文件也会启用等待')
+        if name in jobs.MANAGED_OPERATIONS:
+            command.add_argument('--wait', action='store_true', help='等待生成结果；文本默认等待，指定回填目标或记录文件也会启用等待')
             job_options(command)
     for name, description in [('task-wait', '等待已有媒体任务，可回填指定节点；不会提交生成'),
                               ('task-resume', '读取任务记录，继续等待或只重试回填；不会提交生成')]:
@@ -352,15 +365,17 @@ def main():
         import mira_cli_downloads as downloads
     downloads.register(commands)
     options = parser.parse_args()
-    managed = options.operation in {'task-wait', 'task-resume'} or options.operation in jobs.MEDIA_OPERATIONS
-    wait_requested = options.operation in {'task-wait', 'task-resume'} or any(
+    managed = options.operation in {'task-wait', 'task-resume'} or options.operation in jobs.MANAGED_OPERATIONS
+    wait_requested = options.operation in {'task-wait', 'task-resume', 'text-generate'} or any(
         getattr(options, k, None) for k in ('wait', 'run_file', 'project_id', 'node_id'))
     workflow_exit = 0
     try:
         if options.operation in {'images-download', 'audio-trim'}:
             result = downloads.execute(options, origin(), call)
             print(json.dumps(result, ensure_ascii=False, indent=2))
-            return result.get('exitCode', 0)
+            if result.get('exitCode', 0):
+                parser.exit(result['exitCode'])
+            return
         if options.operation in {'generation-check', 'batch-create', 'batch-status', 'batch-resume', 'media-inspect'} or options.operation in production_commands:
             if __package__:
                 from . import mira_cli_capabilities as capabilities, mira_cli_batch as batch, mira_cli_media as media_cli

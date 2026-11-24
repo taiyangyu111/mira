@@ -8,17 +8,53 @@ import re
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
+from functools import wraps
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
 
 MEDIA_OPERATIONS = {'image-generate': 'image', 'video-generate': 'video', 'audio-generate': 'audio', 'video-white-model': 'video'}
+MANAGED_OPERATIONS = {**MEDIA_OPERATIONS, 'text-generate': 'text'}
 SUCCEEDED = {'completed', 'succeeded', 'success'}
 FAILED = {'failed', 'cancelled', 'canceled', 'error'}
 PENDING = {'pending', 'queued', 'queuing', 'processing', 'running', 'waiting', 'submitted', 'accepted', 'in_progress'}
 ERRORS = (OSError, ValueError, KeyError, httpx.HTTPError)
+_canvas_locks = threading.local()
+
+
+@contextmanager
+def canvas_write(base, project_id, timeout=300):
+    """Same-user, cross-process serialization of a canvas read/modify/write.
+
+    Reentrant for the transport POST inside a Runner transaction. Never hold
+    this lock while submitting or waiting for a generation.
+    """
+    if not project_id:
+        yield
+        return
+    key = hashlib.sha256((base.rstrip('/') + '\n' + str(project_id)).encode()).hexdigest()
+    held = getattr(_canvas_locks, 'held', set())
+    if key in held:
+        yield
+        return
+    path = Path.home() / '.mira' / 'canvas-write-locks' / key
+    with locked(path, timeout=timeout, busy_message='此画布的 CLI 写入等待超时；请用原记录接续'):
+        _canvas_locks.held = held | {key}
+        try:
+            yield
+        finally:
+            _canvas_locks.held = held
+
+
+def serialized_canvas(method):
+    @wraps(method)
+    def wrapped(self, state, path):
+        with canvas_write(self.base, state.get('projectId')):
+            return method(self, state, path)
+    return wrapped
 
 
 def retryable_error(exc):
@@ -56,7 +92,7 @@ def validate_options(options):
 
 
 @contextmanager
-def locked(path, timeout=0):
+def locked(path, timeout=0, busy_message='此任务记录正在被另一个 CLI 使用，请等待该进程结束'):
     """A separate persistent lock file avoids inode replacement races."""
     path.parent.mkdir(parents=True, exist_ok=True)
     stream = path.with_suffix(path.suffix + '.lock').open('a+b')
@@ -79,7 +115,7 @@ def locked(path, timeout=0):
                 break
             except OSError:
                 if time.monotonic() >= deadline:
-                    raise ValueError('此任务记录正在被另一个 CLI 使用，请等待该进程结束') from None
+                    raise ValueError(busy_message) from None
                 time.sleep(.01)
         yield
     finally:
@@ -216,8 +252,8 @@ def target_node(canvas, node_id, kind=None):
     node = next((n for n in document.get('nodes', []) if str(n.get('id')) == node_id), None)
     if node is None:
         raise ValueError('目标节点不存在；请先创建节点')
-    if node.get('type') not in {'image', 'video', 'audio'} or (kind and node.get('type') != kind):
-        raise ValueError('目标必须是与生成类型一致的 image/video/audio 节点')
+    if node.get('type') not in {'image', 'video', 'audio', 'text'} or (kind and node.get('type') != kind):
+        raise ValueError('目标必须是与生成类型一致的 image/video/audio/text 节点')
     version = canvas.get('version', document.get('version'))
     if not isinstance(version, int) or isinstance(version, bool):
         raise ValueError('画布响应缺少有效 version，不能安全回填')
@@ -258,6 +294,10 @@ def public_task(response):
 
 
 def attached_results(metadata, state):
+    if state.get('kind') == 'text':
+        return (metadata.get('cliTextRequestId') == state.get('requestId')
+                and metadata.get('content') == state.get('resultText')
+                and metadata.get('prompt') == state.get('resultText'))
     expected = normalized(state.get('resultUrls') or [state.get('resultUrl')])
     actual = normalized(metadata.get('resultUrls') or [metadata.get('resultUrl')])
     return (metadata.get('taskId') == state.get('taskId') and actual == expected
@@ -275,6 +315,9 @@ class Runner:
     def report(self, state, path):
         keys = ('phase', 'generation', 'attachment', 'taskId', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'taskErrorDetails', 'operationId', 'statusSyncError', 'retryable', 'claimReleaseError')
         result = {k: state.get(k) for k in keys}
+        if state.get('kind') == 'text':
+            result.update(resultText=state.get('resultText'), completionId=state.get('completionId'))
+            result.update(state.get('textResult') or {})
         result.update(queueJobId=state.get('queueJobId'), requestId=state.get('requestId'))
         result.update(runFile=str(path), origin=self.base, resume=['task-resume', '--run-file', str(path)])
         result['exitCode'] = 0 if state['phase'] in {'submitted', 'completed', 'attached'} else (3 if state['phase'] in {'wait_timeout', 'interrupted'} else 4)
@@ -305,6 +348,7 @@ class Runner:
         self.persist(state, path)
         return self.report(state, path)
 
+    @serialized_canvas
     def claim_target(self, state, path):
         """Use the canvas version as a cross-client compare-and-set before billing."""
         claim = state['submissionId']
@@ -342,6 +386,7 @@ class Runner:
                 # A lost acknowledgement may already have saved our claim.
         raise ValueError('无法确认目标节点占用，未提交生成')
 
+    @serialized_canvas
     def release_unsubmitted_claim(self, state, path):
         """Release only our own claim with durable proof generation never began."""
         if state.get('generation') != 'not_submitted' or not state.get('submissionId'):
@@ -377,7 +422,7 @@ class Runner:
                 pass
             state = {'schemaVersion': 1, 'origin': self.base, 'operation': operation, 'projectId': project_id, 'nodeId': node_id,
                      'taskId': task_id, 'phase': 'prepared', 'generation': 'existing' if task_id else 'not_submitted',
-                     'attachment': 'pending' if project_id else 'not_requested', 'kind': MEDIA_OPERATIONS.get(operation),
+                     'attachment': 'pending' if project_id else 'not_requested', 'kind': MANAGED_OPERATIONS.get(operation),
                      'operationId': 'cli-attach-' + str(uuid4()) if project_id else None}
             self.persist(state, path)
             try:
@@ -410,6 +455,14 @@ class Runner:
                         if not wait:
                             return self.finish(state, path, 'submitted')
                         return self.wait_queue(state, path, timeout, poll_interval)
+                    if getattr(exc, 'status_code', None) in {400, 401, 403, 404, 405, 413, 415, 422}:
+                        state.update(generation='not_submitted', submissionRejected=True,
+                                     error=str(exc) + '；请求被拒绝，未自动重新提交。')
+                        self.persist(state, path)
+                        self.release_unsubmitted_claim(state, path)
+                        state.update(generation='failed', taskStatus='failed',
+                                     attachment='not_attempted' if project_id else 'not_requested')
+                        return self.finish(state, path, 'generation_failed', str(exc) + '；请求被拒绝，未自动重新提交。')
                     if wait and retryable_error(exc):
                         return self.wait_queue(state, path, timeout, poll_interval)
                     return self.finish(state, path, 'submission_unknown', str(exc) + '；未自动重试。请核对服务端任务记录。')
@@ -419,6 +472,8 @@ class Runner:
                     if not wait:
                         return self.finish(state, path, 'submitted')
                     return self.wait_queue(state, path, timeout, poll_interval)
+                if state['kind'] == 'text':
+                    return self.complete_text(state, path, response)
                 details = public_task(response)
                 state.update(details)
                 if not details['taskId']:
@@ -450,6 +505,13 @@ class Runner:
                 raise ValueError('不支持的任务记录格式')
             if state.get('origin') != self.base:
                 raise ValueError('MIRA_URL 与任务记录的站点不同，请切回原站点后接续')
+            if state.get('submissionRejected'):
+                self.release_unsubmitted_claim(state, path)
+                state.update(generation='failed', taskStatus='failed',
+                             attachment='not_attempted' if state.get('projectId') else 'not_requested')
+                return self.finish(state, path, 'generation_failed', state.get('error'))
+            if state.get('kind') == 'text' and state.get('generation') == 'succeeded' and isinstance(state.get('resultText'), str):
+                return self.attach_text(state, path) if state.get('projectId') else self.finish(state, path, 'completed')
             if not state.get('taskId'):
                 if state.get('generation') == 'not_submitted':
                     self.release_unsubmitted_claim(state, path)
@@ -488,6 +550,8 @@ class Runner:
                     result = response.get('result')
                     if not isinstance(result, dict):
                         raise ValueError('排队任务已结束但没有有效生成回执，请核查原任务')
+                    if state.get('kind') == 'text':
+                        return self.complete_text(state, path, result)
                     info = public_task(result)
                     if not info.get('taskId'):
                         raise ValueError('排队任务回执缺少生成任务 ID，请核查原任务')
@@ -504,6 +568,9 @@ class Runner:
                     return self.finish(state, path, 'submission_unknown', (response.get('error') or {}).get('message') or '原任务结果待核对；保留排队回执接续，不要重新生成')
                 if status not in {'accepted', 'pending', 'published', 'running', 'deferred'}:
                     raise ValueError('未知排队状态：' + str(status))
+                if state.get('kind') == 'text':
+                    state['taskStatus'] = 'pending'
+                    self.sync_status(state, path)
             except ERRORS as exc:
                 transient = retryable_error(exc) or getattr(exc, 'status_code', None) == 404
                 if not transient or self.clock() >= deadline:
@@ -512,6 +579,55 @@ class Runner:
             if remaining <= 0:
                 return self.finish(state, path, 'wait_timeout', '排队仍在进行；请使用原任务记录接续，未重新提交。')
             self.sleep(min(poll_interval, remaining))
+
+    def complete_text(self, state, path, response):
+        choices = response.get('choices')
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ValueError('文本任务已结束但未返回有效 choices；请保留原记录核查，不要重复生成')
+        message = choices[0].get('message') or {}
+        content = message.get('content') if isinstance(message, dict) else None
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError('文本任务未返回有效正文；请核查原任务，不要重复生成')
+        # A chat completion ID is not a task UUID. Never send it to task-get.
+        # Keep final prose only; reasoning and provider-internal data are omitted.
+        public = {k: response[k] for k in ('id', 'model', 'created', 'usage', 'object') if k in response}
+        public['choices'] = [{'index': 0, 'message': {'role': 'assistant', 'content': content},
+                              'finish_reason': choices[0].get('finish_reason')}]
+        state.update(resultText=content, completionId=response.get('id'), textResult=public,
+                     generation='succeeded', taskStatus='completed', progress=100, retryable=False, error=None)
+        self.persist(state, path)
+        return self.attach_text(state, path) if state.get('projectId') else self.finish(state, path, 'completed')
+
+    @serialized_canvas
+    def attach_text(self, state, path):
+        state['attachment'] = 'pending'
+        for attempt in range(3):
+            try:
+                canvas = self.request('canvas-get', {'project_id': state['projectId']})
+                node, version = target_node(canvas, state['nodeId'], 'text')
+                metadata = dict(node.get('metadata') or {})
+                if attached_results(metadata, state):
+                    state.update(attachment='succeeded', statusSyncError=None)
+                    return self.finish(state, path, 'attached')
+                self.check_target(state, node, canvas)
+                metadata.pop('cliSubmissionId', None)
+                metadata.update(content=state['resultText'], prompt=state['resultText'],
+                                cliTextRequestId=state['requestId'], status='succeeded', taskStatus='completed',
+                                progress=100, errorMessage='', errorDetails=None)
+                self.request('canvas-apply', {'project_id': state['projectId'], 'baseVersion': version,
+                    'operationId': state['operationId'], 'actions': [{'type': 'update_node', 'payload': {
+                        'nodeId': state['nodeId'], 'changes': {'metadata': metadata}}}]})
+                verified = self.request('canvas-get', {'project_id': state['projectId']})
+                actual, _ = target_node(verified, state['nodeId'], 'text')
+                if not attached_results(actual.get('metadata') or {}, state):
+                    raise ValueError('文本回填后节点内容不一致；请核对用户修改，不自动覆盖')
+                state.update(attachment='succeeded', statusSyncError=None)
+                return self.finish(state, path, 'attached')
+            except ERRORS as exc:
+                if 'Mira HTTP 409 ' in str(exc) and attempt < 2:
+                    continue
+                state['attachment'] = 'failed'
+                return self.finish(state, path, 'attach_failed', str(exc), retryable=retryable_error(exc))
 
     def wait(self, state, path, timeout, poll_interval, initial=None):
         deadline = self.clock() + timeout
@@ -580,11 +696,14 @@ class Runner:
         if fingerprint(node, ignore_runtime=modern, normalize_numbers=state.get('fingerprintVersion') in (3, 4, 5, 6),
                        ignore_geometry=state.get('fingerprintVersion') in (4, 5, 6),
                        ignore_registration=state.get('fingerprintVersion') in (5, 6)) != state.get('targetFingerprint'):
+            if state.get('kind') == 'text':
+                raise ValueError('等待期间文本节点已修改，已停止回填；生成正文保留在 resultText，请核对后使用 canvas-apply，不要重复生成。')
             raise ValueError('等待期间目标节点已修改，已停止回填。确认目标后可用 task-wait 显式指定节点重新挂接已有任务。')
         if state.get('fingerprintVersion') not in (3, 4, 5, 6):
             state.update(fingerprintVersion=3, originalTaskId=(node.get('metadata') or {}).get('taskId'),
                          targetFingerprint=fingerprint(node, ignore_runtime=True, normalize_numbers=True))
 
+    @serialized_canvas
     def sync_status(self, state, path):
         if not state.get('projectId') or (not state.get('taskId') and not state.get('queueJobId')):
             return
@@ -630,6 +749,7 @@ class Runner:
                 self.persist(state, path)
                 return
 
+    @serialized_canvas
     def attach(self, state, path):
         state['attachment'] = 'pending'
         kind = (state.get('taskType') or '').split('_')[0]

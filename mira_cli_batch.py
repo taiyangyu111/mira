@@ -145,7 +145,8 @@ def resume(path, base, call, *, timeout=0, poll_interval=5, workers=3, attachmen
         try:
             state = read_receipt(receipt, base)
             recoverable_queue = (state.get('queueJobId') or state.get('requestId')) and state.get('generation') in {'unknown', 'pending'}
-            should_skip = (state.get('phase') in TERMINAL or not state.get('taskId')) and not recoverable_queue
+            recoverable_text = state.get('kind') == 'text' and state.get('generation') == 'succeeded' and state.get('attachment') in {'pending', 'failed'}
+            should_skip = (state.get('phase') in TERMINAL or not state.get('taskId')) and not (recoverable_queue or recoverable_text)
             if attachments_only and not (state.get('generation') == 'succeeded' and state.get('attachment') in ('pending', 'failed')):
                 should_skip = True
             if should_skip or (timeout > 0 and clock() >= deadline):

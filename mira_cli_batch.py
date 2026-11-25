@@ -70,8 +70,12 @@ def row(path, state):
         status = 'query_failed'
     else:
         status = 'running'
-    return {'runFile': str(path), 'status': status, **{k: state.get(k) for k in (
+    result = {'runFile': str(path), 'status': status, **{k: state.get(k) for k in (
         'taskId', 'queueJobId', 'requestId', 'phase', 'generation', 'attachment', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'retryable')}}
+    for key in ('billing', 'billingTaskId'):
+        if state.get(key):
+            result[key] = state[key]
+    return result
 
 
 def error_row(path, exc):
@@ -126,6 +130,8 @@ def status(path, base, call, refresh=False):
                     state.update(generation='pending', phase='waiting', error=None)
                 else:
                     raise ValueError('未知任务状态：' + info['taskStatus'])
+            elif refresh and state.get('billingTaskId'):
+                jobs.Runner(call, base).refresh_billing(state, state['billingTaskId'])
             rows.append(row(receipt, state))
         except jobs.ERRORS as exc:
             rows.append({**row(receipt, state), 'status': 'query_failed', 'error': str(exc)} if state else error_row(receipt, exc))

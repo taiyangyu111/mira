@@ -1682,7 +1682,7 @@
         "model": "替换为实际模型ID",
         "numImages": 1
       },
-      "notes": "只查询报价；estimateAvailable=false 不代表免费。模型 ID 使用 model-list 返回值。"
+      "notes": "只查询报价。Seed Audio 1.0 按原始成品时长计费，提供 durationSeconds 可预估总积分，creditsPerSecond 表示每秒积分。estimateAvailable=false 表示没有预估总价。"
     },
     "account": {
       "schema": {
@@ -1792,7 +1792,7 @@
       "example": {
         "task_id": "11111111-1111-4111-8111-111111111111"
       },
-      "notes": ""
+      "notes": "billing.status=settled 时，chargedPointsExact 是账本中的精确积分。pending 表示待结算，建议稍后用同一任务 ID 查询。"
     },
     "material-get": {
       "schema": {

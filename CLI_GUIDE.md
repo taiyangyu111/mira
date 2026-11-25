@@ -1,4 +1,9 @@
-# CLI 使用说明（v0.9.8）
+# CLI 使用说明（v0.9.9）
+
+## v0.9.9 更新
+
+- 任务查询、摘要和接续显示新版服务端返回的实际结算积分或待结算状态。
+- Seed Audio 1.0 在时长未知时显示每秒积分，提供预计时长后可查询预估总价。
 
 ## v0.9.8 更新
 
@@ -166,7 +171,9 @@ python mira.py task-get --file task.json --fields "task_id,task.status,task.resu
 python mira.py task-get --file task.json --summary --fields "taskId,status,error"
 ```
 
-任务摘要只包含任务 ID、状态、进度、结果地址和错误信息。结果地址只读取服务端公开字段，不从内部元数据中找回被审核隐藏的地址。
+任务摘要包含任务 ID、状态、进度、结果地址、错误和积分结算信息。结果地址只读取服务端公开字段，不从内部元数据中找回被审核隐藏的地址。
+
+用 `--summary --fields "taskId,billing.status,billing.chargedPointsExact"` 查看结算。已结算时，`chargedPointsExact` 是账本确认的精确积分。钱包账号显示实际扣费，内部账号显示积分用量。`pending` 表示待结算，`unavailable` 表示暂时查不到结算信息。保留原任务 ID 稍后查询即可。文本生成用回执里的 `billingTaskId` 查询，接续原记录也会刷新结算。旧服务端可能没有该字段。
 
 `--fields` 适用于接口命令，支持点分隔路径与数组下标，如 `items.0.id`。与摘要组合时，字段路径针对摘要结果。不存在的字段返回 `null` 并在 `_missingFields` 中列明；不会因为筛选失败而自动重新提交请求。
 
@@ -196,6 +203,8 @@ python mira.py image-generate --file image.json --confirm-spend --wait --project
 ```
 
 参数文件仍只放生成参数。`--project-id`、`--node-id` 是 CLI 选项，必须成对出现。CLI 会在提交前检查节点存在、节点类型与生成类型一致。请先通过 `generation-quote` 查看报价；等待功能不会替你确认消费。
+
+Seed Audio 1.0 报价使用 `{"type":"audio","model":"seed-audio-1.0"}`，返回 `creditsPerSecond`（每秒积分）。如果能估计成品时长，可加 `"durationSeconds": 5` 获取预估总积分。实际用量按上游返回的原始成品时长结算。
 
 只等待结果，不回填：
 

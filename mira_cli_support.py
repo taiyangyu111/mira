@@ -179,12 +179,30 @@ def canvas_view(result, node_id=None, summary=False):
     return view
 
 
+def task_billing(result):
+    value = result.get('billing')
+    if not isinstance(value, dict):
+        return None
+    status = value.get('status')
+    exact = value.get('chargedPointsExact')
+    mode = value.get('accountingMode')
+    accounting = {'accountingMode': mode} if mode in ('usage', 'external') else {}
+    if status == 'settled' and isinstance(exact, str) and re.fullmatch(r'[0-9]+(?:\.[0-9]+)?', exact):
+        return {'status': status, 'chargedPointsExact': exact, **accounting}
+    if status in ('pending', 'unavailable'):
+        return {'status': status, 'chargedPointsExact': None, **accounting}
+    return None
+
+
 def task_view(result):
     task = result.get('task') or result
-    return {'taskId': result.get('task_id') or result.get('taskId') or task.get('id'),
+    view = {'taskId': result.get('task_id') or result.get('taskId') or task.get('id'),
             'status': task.get('status') or result.get('status'), 'progress': task.get('progress'),
             'resultUrl': task.get('result_url') or task.get('resultUrl'),
             'error': task.get('error_message') or task.get('errorMessage') or result.get('message')}
+    if billing := task_billing(result):
+        view['billing'] = billing
+    return view
 
 
 def model_view(config, kind=None, model=None):

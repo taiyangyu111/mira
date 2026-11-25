@@ -1,14 +1,21 @@
 # Mira CLI
 
-通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.9.8**。
+通过命令行访问 Mira 账号、画布、素材和创作任务。当前版本：**v0.9.9**。
 
 [下载最新 CLI 压缩包](https://github.com/taiyangyu111/mira/releases/latest/download/mira-cli.zip) · [版本与校验文件](https://github.com/taiyangyu111/mira/releases/latest)
 
-手动下载与留存可选 [mira-cli-v0.9.8.zip](https://github.com/taiyangyu111/mira/releases/download/v0.9.8/mira-cli-v0.9.8.zip)，与 `mira-cli.zip` 内容完全一致。固定名称链接供 AI 自动安装使用；GitHub 的 `Source code` 为源码归档，安装请使用 CLI 压缩包。
+手动下载与留存可选 [mira-cli-v0.9.9.zip](https://github.com/taiyangyu111/mira/releases/download/v0.9.9/mira-cli-v0.9.9.zip)，与 `mira-cli.zip` 内容完全一致。固定名称链接供 AI 自动安装使用；GitHub 的 `Source code` 为源码归档，安装请使用 CLI 压缩包。
 
 此下载包仅包含 CLI。需要 Python 3.11 或更高版本，以及可访问的 Mira 服务。浏览器登录后自动保存凭据，无需手动复制令牌。
 
-## v0.9.8 更新：文本接续与稳定回填
+## v0.9.9 更新：任务结算与音频报价
+
+- `task-get --summary` 和 `task-resume` 现在显示当前任务的积分结算状态。已结算时显示账本确认的积分，待结算时可稍后用原任务 ID 查询。
+- Seed Audio 1.0 支持查看每秒积分。提供预计时长后可查询预估总价，实际费用按原始成品时长结算。
+
+这两项功能需要站点部署配套的服务端更新。升级 CLI 时请保留系统登录凭据和原任务记录，并继续使用同一 `MIRA_URL`。
+
+## v0.9.8 更新：文本接续与稳定回填（历史记录）
 
 - 文本生成加入异步回执、任务记录和节点回填，超时或中断后接续原请求，不重复生成。
 - 同机、同系统用户的 CLI 按站点和画布依次保存，生成任务继续并行，不同画布互不等待。跨电脑、浏览器和旧客户端仍由服务端版本校验保护。

@@ -27,10 +27,10 @@ OPERATIONS = {
     'asset-import': ('POST', CANVAS + '/mira/assets/{asset_id}/import', '将已有 Mira 资产导入画布素材'),
     'asset-upload': ('POST', CANVAS + '/media/references', '上传图片、视频或音频参考素材'),
     'model-list': ('GET', CANVAS + '/ai/config', '读取 Mira 画布模型配置'),
-    'generation-quote': ('POST', CANVAS + '/ai/generation/quote', '查询图片或视频估价及是否可用'),
+    'generation-quote': ('POST', CANVAS + '/ai/generation/quote', '查询生成前估价及音频计价单价'),
     'white-model-options': ('GET', CANVAS + '/ai/videos/white-model/options', '查询当前站点白模转换是否开放'),
     'white-model-quote': ('POST', CANVAS + '/ai/videos/white-model/quote', '查询白模转换费用，无法估价不代表免费'),
-    'task-get': ('GET', CANVAS + '/ai/tasks/{task_id}', '查询自己的画布任务状态与结果'),
+    'task-get': ('GET', CANVAS + '/ai/tasks/{task_id}', '查询自己的画布任务状态、结果与积分结算'),
     'node-download': ('GET', CANVAS + '/canvases/{project_id}/nodes/{node_id}/download', '下载当前媒体节点，可指定结果序号'),
     'task-download': ('GET', CANVAS + '/ai/tasks/{task_id}/download', '下载已归档的任务结果到 output'),
     'material-list': ('GET', CANVAS + '/materials/canvas-library', '查询画布素材及服务端审核状态'),
@@ -206,7 +206,8 @@ def main():
         import mira_cli_support as cli
         import mira_cli_jobs as jobs
     parser = argparse.ArgumentParser(prog='mira', description='Mira CLI 创作工具')
-    parser.add_argument('--version', action='version', version='Mira CLI 0.9.8')
+    version = Path(__file__).with_name('VERSION').read_text(encoding='utf-8').strip()
+    parser.add_argument('--version', action='version', version=f'Mira CLI {version}')
     commands = parser.add_subparsers(dest='operation', required=True)
 
     def job_options(command, resume=False):

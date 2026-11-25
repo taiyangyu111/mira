@@ -15,6 +15,10 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import httpx
+if __package__:
+    from .mira_cli_support import task_billing
+else:
+    from mira_cli_support import task_billing
 
 MEDIA_OPERATIONS = {'image-generate': 'image', 'video-generate': 'video', 'audio-generate': 'audio', 'video-white-model': 'video'}
 MANAGED_OPERATIONS = {**MEDIA_OPERATIONS, 'text-generate': 'text'}
@@ -290,7 +294,7 @@ def public_task(response):
             'progress': task.get('progress'), 'resultUrl': primary, 'resultUrls': urls,
             'thumbnailUrl': task.get('thumbnail_url') or task.get('thumbnailUrl'),
             'taskError': task.get('error_message') or task.get('errorMessage') or (details or {}).get('message') or response.get('message'),
-            'taskErrorDetails': details}
+             'taskErrorDetails': details, 'billing': task_billing(response)}
 
 
 def attached_results(metadata, state):
@@ -312,11 +316,31 @@ class Runner:
     def request(self, operation, arguments, timeout=90, **kwargs):
         return self.call(operation, arguments, base=self.base, request_timeout=timeout, **kwargs)
 
+    def refresh_billing(self, state, task_id):
+        """Keep a finished generation usable when its billing read is unavailable."""
+        billing = None
+        try:
+            response = self.request('task-get', {'task_id': task_id}, timeout=3)
+            if isinstance(response, dict):
+                task = response.get('task')
+                reported = response.get('task_id') or response.get('taskId')
+                if reported is None and isinstance(task, dict):
+                    reported = task.get('id')
+                if str(reported) == task_id:
+                    billing = task_billing(response)
+        except ERRORS:
+            pass
+        state['billing'] = billing or {'status': 'unavailable', 'chargedPointsExact': None}
+
     def report(self, state, path):
         keys = ('phase', 'generation', 'attachment', 'taskId', 'taskStatus', 'progress', 'projectId', 'nodeId', 'resultUrl', 'resultUrls', 'error', 'taskErrorDetails', 'operationId', 'statusSyncError', 'retryable', 'claimReleaseError')
         result = {k: state.get(k) for k in keys}
+        if state.get('billing'):
+            result['billing'] = state['billing']
         if state.get('kind') == 'text':
             result.update(resultText=state.get('resultText'), completionId=state.get('completionId'))
+            if state.get('billingTaskId'):
+                result['billingTaskId'] = state['billingTaskId']
             result.update(state.get('textResult') or {})
         result.update(queueJobId=state.get('queueJobId'), requestId=state.get('requestId'))
         result.update(runFile=str(path), origin=self.base, resume=['task-resume', '--run-file', str(path)])
@@ -480,6 +504,9 @@ class Runner:
                     return self.finish(state, path, 'submission_unknown', '响应缺少任务 ID；请核对服务端任务记录，不要重复生成。')
                 state.update(phase='waiting', generation='pending')
                 self.persist(state, path)
+                if details['billing'] is None and details['taskStatus'] in (SUCCEEDED | FAILED):
+                    self.refresh_billing(state, str(details['taskId']))
+                    response = {**response, 'billing': state['billing']}
                 self.announce(json.dumps({'taskId': state['taskId'], 'runFile': str(path), 'message': '任务已提交；中断后使用 task-resume 接续'}, ensure_ascii=False))
                 if not wait:
                     self.sync_status(state, path)
@@ -511,6 +538,8 @@ class Runner:
                              attachment='not_attempted' if state.get('projectId') else 'not_requested')
                 return self.finish(state, path, 'generation_failed', state.get('error'))
             if state.get('kind') == 'text' and state.get('generation') == 'succeeded' and isinstance(state.get('resultText'), str):
+                if state.get('billingTaskId'):
+                    self.refresh_billing(state, state['billingTaskId'])
                 return self.attach_text(state, path) if state.get('projectId') else self.finish(state, path, 'completed')
             if not state.get('taskId'):
                 if state.get('generation') == 'not_submitted':
@@ -595,7 +624,13 @@ class Runner:
                               'finish_reason': choices[0].get('finish_reason')}]
         state.update(resultText=content, completionId=response.get('id'), textResult=public,
                      generation='succeeded', taskStatus='completed', progress=100, retryable=False, error=None)
+        try:
+            state['billingTaskId'] = str(UUID(response['billingTaskId']))
+        except (KeyError, TypeError, AttributeError, ValueError):
+            pass  # Older Hub versions only return the provider's completion ID.
         self.persist(state, path)
+        if state.get('billingTaskId'):
+            self.refresh_billing(state, state['billingTaskId'])
         return self.attach_text(state, path) if state.get('projectId') else self.finish(state, path, 'completed')
 
     @serialized_canvas
